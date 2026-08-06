@@ -186,6 +186,21 @@ off-device, deploy trained policies back onto the robot for on-device inference.
   resolved. It does need the physical measurements listed in the checklist below before the URDF
   can use real numbers instead of placeholders.
 
+### Manipulation tasks (e.g. sorting items from a box)
+
+- **Prerequisites, in order:** gripper/end-effector → scripted pick-and-place using it (still
+  Phase 1, no vision) → confirmed Jetson model + camera choice → object recognition/perception →
+  teleoperation method for demo collection → imitation learning.
+- **Control algorithm sequencing:** don't reach for imitation learning first. Do **scripted IK +
+  object recognition** (Phase 1 extended with vision — detect item pose, IK to it, scripted grasp)
+  for a small fixed set of known items/bins first. It validates the gripper, camera, and reach
+  accuracy without also needing teleoperation infra and training data at the same time.
+  **Imitation learning** (Phase 2, per above) is reserved for when scripted grasping hits its
+  actual limit — generalizing to item types/arrangements not hand-coded for — not before.
+- **Teleoperation method for demo collection is not yet decided** (leader arm, joystick, VR
+  controller, hand-guided backdrive) — needed for Phase 2 regardless of which option above, added
+  to the checklist below.
+
 ## 9. Open questions / TBD checklist
 
 Update this list as items get resolved — move resolved items into the relevant section above
@@ -216,3 +231,5 @@ instead of just deleting them.
 - [ ] Gimbal linkage geometry / motor-angle-to-output-angle relationship (or a calibration
       procedure using the 2 CANcoders, if no closed-form relationship is available)
 - [ ] Reference "zero pose" definition (what the physical rest position of each joint looks like)
+- [ ] Teleoperation method for imitation-learning demo collection (leader arm / joystick / VR
+      controller / hand-guided backdrive) — needed for Phase 2 (§8)
