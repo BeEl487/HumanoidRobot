@@ -22,17 +22,20 @@ All runs: PPO (Stable-Baselines3), `MultiInputPolicy` (2×64 MLP, ~12k params), 
 | v5 | + curriculum spawning (object starts near one arm) | −28.4 | −28.4 (at 500k, final) | 0% |
 | v6 | + tighter curriculum + 3x touch/grasp bonuses | −41.9* | −41.9* | 0% |
 | v7 (aborted) | + fingertip reference point (untested alone) | ~−40 (partial run, 340k/500k) | — | 0% |
-| **v8** | + shorter walls + wall-clearance curriculum target | −51.6 | −51.6 | **0% (but 2/10 episodes made finger contact)** |
+| v8 | + shorter walls + wall-clearance curriculum target | −51.6 | −51.6 | 0% (**2/10 episodes made finger contact**) |
+| v9 | + anti-stall penalty | −60.8 | −55.4 (at 400k) | 0% (**0/10 contact — regression from v8**) |
 
 *v6's reward isn't directly comparable to earlier runs — its `distance_weight` is 1.5x steeper, so
 the same behavior scores more negative by construction. A direct, reward-independent check (raw
 EE-to-object distance) shows v6's policy is behaviorally identical to v5's — see the v6 section
-below. v8 uses the same `distance_weight` as v6, so v6-vs-v8 numbers ARE directly comparable.
+below. v8 and v9 both use the same `distance_weight` as v6, so those three ARE directly comparable
+on raw reward.
 
 **v8 is the first checkpoint in this entire project to achieve finger contact at all** — 2 of 10
-evaluation episodes, verified via the environment's own contact flag. v5 remains the best result by
-raw reward. No run has produced a successful grasp (lift ≥5cm, held 10 consecutive steps) at these
-budgets.
+evaluation episodes, verified via the environment's own contact flag. v9 (adding an anti-stall
+penalty on top of v8) made this worse, not better — see the v9 section for why. v5 remains the
+best result by raw reward, v8 the best by contact rate. No run has produced a successful grasp
+(lift ≥5cm, held 10 consecutive steps) at these budgets.
 
 ## v1 — baseline, full budget
 
@@ -221,25 +224,50 @@ knockout penalties than episodes that stay farther away.
 
 Checkpoint: `checkpoints/ppo_state_v8.zip` — **first checkpoint to ever make contact.**
 
+## v9 — anti-stall penalty (regression)
+
+**Decision:** user chose to flip on the queued `reward.stuck` penalty from v8's options.
+
+**Change:** `config/env.yaml`'s `reward.stuck.enabled: true`. Continuous -0.05/step penalty once
+the closest arm's EE moves <1mm for 15+ consecutive steps. Mechanically verified before launch
+(zero-action test correctly triggered it).
+
+**What happened:** −127.1 (20k) → −64.5 (100k) → −61.4 (200k) → −58.3 (300k) → −55.4 (400k) →
+**−60.8 (500k, final)**. Contact rate: 0 → 1 → 0 → 0 → 0 → **0**. Exactly 1 touch across all 60
+evaluated episodes, versus v8's consistent 10-20% from 100k onward. **A clear regression, not
+noise.**
+
+**Root-caused:** instrumented a v9 rollout to count how often the penalty fires —
+**48% of all steps.** Not a rare correction, a dominant near-constant pressure. Likely mechanism:
+precise reaching/grasping requires slowing down and holding carefully still on final approach; a
+blanket "keep moving or get penalized" rule can't tell that apart from unproductive idling, and
+probably suppressed exactly the careful slow-approach behavior that led to v8's contact events.
+
+One hypothesis was checked and **ruled out**: that the fingertip-midpoint reference might be
+structurally blind to the gripper closing (symmetric finger motion could in principle leave the
+average position fixed). Directly measured via a qpos sweep (arm frozen, gripper 0→0.03): the
+midpoint moved ~1.5cm across the full travel, well above the 1mm threshold — not the mechanism.
+The over-firing is broader than that.
+
+Checkpoint: `checkpoints/ppo_state_v9.zip`.
+
 ## Where this stands
 
-Eight iterations. v8 is the first to break through to actual contact, confirming the wall-clearance
-diagnosis was a real, physically-grounded blocker — not just another hyperparameter guess. The
-remaining gap looks different in kind from every earlier round: not "can't get close" (v1-v4), not
-"gets close but the reward doesn't reflect it" (v6's measurement-gap finding), but "touches with one
-finger and stops" — a precision/control problem. Options on the table:
+Nine iterations. v8 broke through to actual contact (first time ever) by fixing a real physical
+obstruction; v9 tried to push further with an anti-stall penalty and made contact rate worse
+instead, with a confirmed mechanism (the penalty fires on ~48% of steps, likely suppressing the
+careful slow approach grasping needs). Options on the table:
 
-1. **The queued anti-stall penalty** — `config/env.yaml`'s `reward.stuck` (added this session, off
-   by default so it couldn't leak into v8's own evaluation) penalizes the closest arm's EE for
-   staying near-motionless too long. Touch-then-freeze is exactly the pattern this targets; flip
-   `enabled: true` for v9.
-2. **Increase network capacity** — still a stock 64×64 MLP across all eight runs; closing both
-   fingers around an object may need finer control than it can express.
-3. **Switch to imitation learning** — `../../docs/ARCHITECTURE.md` §8 already prefers this over
-   RL for the real robot's manipulation learning, for reasons that apply here too (contact-rich,
-   precision-sensitive tasks are exactly where sparse-reward RL struggles and demonstrations shine).
-4. **Stop here** — v8 is a genuinely new baseline (first-ever contact), and the simulation pipeline
-   itself is solid and fully verified regardless of whether this specific RL search converges.
+1. **Revert to v8's config** (`reward.stuck.enabled: false`) and treat v8 as the working baseline
+   — still the best contact rate achieved, and this run showed the penalty as designed actively
+   hurts it.
+2. **Retune the penalty, much more conservatively** — e.g. only apply once `is_touching` is
+   already true (so it can never discourage the approach itself, only genuine post-contact
+   freezing), or a far longer `steps_threshold` (~40-60 steps / 2-3s) so brief careful slowdowns
+   aren't caught.
+3. **Increase network capacity** instead — still a stock 64×64 MLP across all nine runs.
+4. **Switch to imitation learning** — `../../docs/ARCHITECTURE.md` §8 already prefers this over
+   RL for the real robot's manipulation learning, for reasons that apply here too.
 
 ## Bugs found and fixed along the way (not RL-specific, but found during this work)
 

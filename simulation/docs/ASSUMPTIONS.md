@@ -40,7 +40,7 @@ no URDF, CAD, mesh, or measurement doc exists anywhere in this repo outside ARCH
 | Upper arm | Cylinder r=0.020 m, l=0.18 m, PETG density 1200 kg/m³ → mass 0.271 kg (+0.15 kg lumped actuator mass at the shoulder-roll end, see below) | Scale order-of-magnitude matched to Poppy Torso's upper-arm segment (~0.11 m to elbow, plus intermediate brackets); sized somewhat larger to reach a table-height bin. | Yes |
 | Forearm | Cylinder r=0.018 m, l=0.15 m, PETG density 1200 kg/m³ → mass 0.183 kg (+0.15 kg lumped actuator mass at the elbow end) | Same rationale as upper arm. | Yes |
 | Per-joint lumped actuator mass | 0.15 kg per joint (0.025 m cube, density 9600 kg/m³), placed at each of the 3 joints per arm (shoulder_pitch on the shoulder connector link, shoulder_roll and elbow at the proximal end of their respective links) | Stands in for the ODrive Mini + BLDC motor assembly at each joint — no real datasheet mass exists yet, so a single box of plausible density (comparable to a compact motor+driver assembly) was used rather than modeling actual motor geometry. | Yes — critical, replace with real ODrive Mini + motor mass once weighed. |
-| Joint ranges | shoulder_pitch: −120° to +155°; shoulder_roll: **−15° to +120°**; elbow: 0° to +148° | Magnitudes matched to Poppy Torso's l_shoulder_y (−120°/+155°), l_shoulder_x (~110° span), and l_elbow_y (~148° span) joints — Poppy's own zero-pose convention differs from this robot's ("arms down" here vs. Poppy's own reference), so only the range *magnitudes* were reused, not copied as absolute values against a matching zero. shoulder_roll's lower bound was widened from 0° to −15° during Milestone 5: at exactly [0°, 120°] the roll joint can only swing the arm *away* from the body from its resting-at-the-hip position, never toward the centerline, which left a dead zone between the two shoulders (±11 cm) that neither arm could reach — confirmed via `reachability_check.py` dropping to ~6% coverage. A small negative (adduction) allowance is also anatomically realistic for a shoulder joint, not purely a reachability hack. | Yes |
+| Joint ranges | shoulder_pitch: −120° to +155°; shoulder_roll: **−50° to +120°** (was −15° to +120° through v9); elbow: 0° to +148° | Magnitudes matched to Poppy Torso's l_shoulder_y (−120°/+155°), l_shoulder_x (~110° span), and l_elbow_y (~148° span) joints — Poppy's own zero-pose convention differs from this robot's ("arms down" here vs. Poppy's own reference), so only the range *magnitudes* were reused, not copied as absolute values against a matching zero. shoulder_roll's lower bound was widened from 0° to −15° during Milestone 5 (dead-zone fix, below), then to **−50° for v10** after a user-flagged suspicion ("I don't think your joint config is able to reach the cube") turned out correct: a proper IK solve (ikpy/LM, the same method `reachability_check.py` uses) at the v8/v9 curriculum target (Y=0.02) showed −15° left the point genuinely *unreachable* — not close, not marginal, outside the workspace entirely for any joint combination — while v5/v6's original target (Y=0.08) had converged to within 2.4mm precisely because it sat almost exactly at that −15° boundary. −50° gives the v8/v9 target a comfortable ~13° margin from the new limit (0.00cm IK residual) instead of being pinned at the edge; verified before the fix mattered `reachability_check.py`'s general bin-floor grid also improved, 88.9%→100%. The original 0°→−15° widening (below) left a dead zone between the two shoulders (±11 cm) that neither arm could reach at all — confirmed via `reachability_check.py` dropping to ~6% coverage; that fix stands independently of this one. A wider negative (adduction) allowance is also anatomically plausible for a shoulder joint, not purely a reachability hack. | Yes |
 | Joint velocity limit | 120°/s (2.0944 rad/s), all arm joints | Placeholder — not derived from a real motor speed/gear-ratio spec (unconfirmed per ARCHITECTURE.md §3/§9). | Yes |
 | Joint torque (effort) limit | 3.0 N·m shoulder joints, 2.0 N·m elbow | Placeholder — not derived from ODrive Mini current limit (20 A per the firmware sample config) x an actual motor torque constant, since no confirmed motor model/Kt exists yet. | Yes |
 | Sign convention | shoulder_pitch axis = lateral (Y), same both sides. shoulder_roll axis = fore-aft (X), **mirrored** between sides (left: +X, right: −X) so a positive command means "raise arm away from body" symmetrically on both arms. elbow axis = Y, same both sides, 0°=straight/positive=flexion. | A concrete, internally-consistent choice was needed to build anything; verified correct (not just internally consistent) by `fk_sanity_check` in `rollout_smoke_test.py`, which confirms shoulder_roll actually displaces the end effector sideways rather than spinning the arm in place. | Pre-answers ARCHITECTURE.md §9's open sign-convention item for simulation purposes only — real hardware sign convention still needs confirming independently. |
@@ -528,5 +528,95 @@ as a precision/control problem rather than an obstruction problem. Options prese
 session per user request -- penalizes the closest arm's EE for staying near-motionless too long,
 on the theory that touch-then-freeze is exactly the pattern a stuck-penalty targets); (b) increase
 network capacity; (c) switch to imitation learning; (d) stop here with v8 (first checkpoint to ever
-make contact) as the new baseline. See `training/TRAINING_LOG.md` for the full v1-v8 readable
-summary.
+make contact) as the new baseline. User chose (a).
+
+### v9 — anti-stall penalty (regression: made contact rate worse, not better)
+
+**Change:** flipped `config/env.yaml`'s `reward.stuck.enabled` to `true` (was added, off by
+default, alongside v8's fix). Continuous penalty (-0.05/step) once the closest arm's EE moves less
+than 1mm for 15+ consecutive steps. Verified mechanically before launch (zero-action rollout
+correctly triggered the penalty after the threshold; `check_env.py` passed).
+
+**Outcome:**
+
+| Steps | reward | episodes with contact (of 10) |
+|---|---|---|
+| 20,000 | -127.1 | 0 |
+| 100,000 | -64.5 | 1 |
+| 200,000 | -61.4 | 0 |
+| 300,000 | -58.3 | 0 |
+| 400,000 | -55.4 | 0 |
+| 500,000 (final) | -60.8 | 0 |
+
+**A clear regression, not noise.** v8 achieved contact in 10-20% of episodes at every checkpoint
+from 100k onward, consistently across four checkpoints. v9 managed exactly 1 touch across all 60
+evaluated episodes (10 x 6 checkpoints) -- essentially zero.
+
+**Root-caused, not just observed.** Instrumented a v9 rollout to count how often the stuck penalty
+actually fires: **48% of all steps.** Not a rare correction for pathological freezing -- a
+dominant, near-constant pressure across roughly half of every episode. Likely mechanism: precise
+reaching/grasping inherently requires slowing down and holding carefully still during final
+approach (real grasp controllers decelerate on purpose near contact); a blanket "keep moving >1mm
+every 15 steps or get penalized" rule can't distinguish that from unproductive idling, and likely
+discouraged exactly the careful slow-approach behavior that led to v8's contact events.
+
+One specific hypothesis was checked and **ruled out** before settling on the above: that
+`_ee_pos()`'s fingertip-midpoint reference might be structurally blind to the gripper closing
+(since the two fingers move symmetrically via the mimic constraint, their average position could
+in principle stay fixed as they close). Directly measured via a qpos sweep (arm frozen, gripper
+swept qpos 0->0.03): the midpoint moved ~1.5cm across the full travel, well above the 1mm
+threshold -- so gripper-closing motion alone is NOT invisible to the detector. The over-firing is
+broader than that single mechanism, consistent with the "penalizes careful slow approach in
+general" explanation above.
+
+Checkpoint: `checkpoints/ppo_state_v9.zip`. Options presented to the user: (a) revert to v8's
+config (`reward.stuck.enabled: false`) and treat v8 as the working baseline; (b) retune the
+penalty much more conservatively -- e.g. only apply once `is_touching` is already true (so it can
+never discourage the approach itself, only genuine post-contact freezing), or a far longer
+`steps_threshold` (~40-60 steps / 2-3s) so brief careful slowdowns aren't caught; (c) increase
+network capacity instead; (d) switch to imitation learning. See `training/TRAINING_LOG.md` for the
+full v1-v9 readable summary.
+
+### v10 — kinematic reachability fix (widened shoulder_roll)
+
+**The finding, from a user hunch after watching v9's rollout** ("I don't think your joint config
+is able to reach the cube"): checked directly rather than assumed. A crude Jacobian-transpose
+controller (same style as `check_env.py`'s scripted test) driven at the exact v8/v9 curriculum
+target (Y=0.02) for 2000 steps -- 10x an RL episode's budget -- converged to a steady state 6cm
+short, with `shoulder_roll` pinned exactly at its then lower limit (−15°/−0.2618 rad). Comparing
+against the original v5/v6 target (Y=0.08): that one converged to within 2.4mm, *also* with
+`shoulder_roll` pinned at the same limit -- meaning v5/v6's target was only barely reachable, right
+at the workspace boundary, and v8's "wall clearance" fix (moving the target closer to the bin
+centerline, away from the wall) had unknowingly moved it from *barely reachable* to *genuinely
+unreachable*, fixing one problem while worsening a different, previously-invisible one.
+
+Confirmed with the authoritative method (ikpy/LM, same solver `reachability_check.py`'s gate uses,
+not the crude Jacobian-transpose test -- that one turned out to just be a poor/slow-converging
+numerical method for this configuration, not evidence of a true kinematic wall; its 6cm/5.5cm
+results before/after the fix are both misleading about the underlying reachability, only useful as
+motivation to check properly): at the old −15° limit, Y=0.02 has **no exact solution at all** for
+any joint combination -- confirmed via the same LM solver used everywhere else in this project, not
+just the crude test.
+
+**Change** (`models/urdf/humanoid.urdf`): `shoulder_roll`'s lower limit widened −15° → **−50°**
+(−0.2618 → −0.8727 rad), both arms (mirrored). Chosen empirically: −35° made Y=0.02 solvable
+(0.47cm residual) but still pinned exactly at the new boundary (no margin, same failure mode as
+v5/v6's original target); −50° gives a genuinely comfortable margin (0.00cm residual, solved angle
+~13° clear of the limit). A wider negative (adduction) allowance is anatomically plausible for a
+shoulder joint, not purely a reachability hack, though still a sim-only placeholder pending real
+hardware confirmation like every other joint-range value in this table.
+
+**Verification:** `check_model.py`, `check_env.py` both pass. `reachability_check.py`'s general
+bin-floor grid gate *improved* (88.9% → 100%), not just the one specific target point -- no
+regression elsewhere from the wider range.
+
+**Important caveat, stated honestly:** this removes a genuine *impossibility* (no arm configuration
+could reach the target before; now one can, with margin) -- it does not guarantee the RL policy
+will easily *find* that configuration through training. A kinematic solution existing is necessary
+but not sufficient; a small 64x64-MLP policy still has to discover the right multi-joint
+coordination via exploration. Also reverted `reward.stuck.enabled` back to `false` (v9's
+regression) for this run, so the reachability fix is the one new variable being tested, not
+compounded with a mechanism already shown to hurt.
+
+Checkpoint: `checkpoints/ppo_state_v10.zip` (pending). See `training/TRAINING_LOG.md` for the full
+v1-v10 readable summary once complete.

@@ -94,7 +94,7 @@
     <child link="left_upper_arm_link"/>
     <origin xyz="0 0 0" rpy="0 0 0"/>
     <axis xyz="1 0 0"/>
-    <limit lower="-0.2618" upper="2.0944" effort="3.0" velocity="2.0944"/>
+    <limit lower="-0.8727" upper="2.0944" effort="3.0" velocity="2.0944"/>
   </joint>
 
   <link name="left_forearm_link">
@@ -204,7 +204,7 @@
     <child link="right_upper_arm_link"/>
     <origin xyz="0 0 0" rpy="0 0 0"/>
     <axis xyz="-1 0 0"/>
-    <limit lower="-0.2618" upper="2.0944" effort="3.0" velocity="2.0944"/>
+    <limit lower="-0.8727" upper="2.0944" effort="3.0" velocity="2.0944"/>
   </joint>
 
   <link name="right_forearm_link">

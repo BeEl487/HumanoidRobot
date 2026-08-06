@@ -43,7 +43,7 @@
               <joint name="left_shoulder_pitch_joint" pos="0 0 0" axis="0 1 0" range="-2.0944 2.7053" actuatorfrcrange="-3 3"/>
               <geom name="left_shoulder_actuator_collision" size="0.0125 0.0125 0.0125" type="box" density="9600"/>
               <body name="left_upper_arm_link">
-                <joint name="left_shoulder_roll_joint" pos="0 0 0" axis="1 0 0" range="-0.2618 2.0944" actuatorfrcrange="-3 3"/>
+                <joint name="left_shoulder_roll_joint" pos="0 0 0" axis="1 0 0" range="-0.8727 2.0944" actuatorfrcrange="-3 3"/>
                 <geom name="left_shoulder_roll_actuator_collision" size="0.0125 0.0125 0.0125" pos="0 0 -0.015" type="box" density="9600"/>
                 <geom name="left_upper_arm_collision" size="0.02 0.09" pos="0 0 -0.09" type="cylinder" density="1200"/>
                 <body name="left_forearm_link" pos="0 0 -0.18">
@@ -70,7 +70,7 @@
               <joint name="right_shoulder_pitch_joint" pos="0 0 0" axis="0 1 0" range="-2.0944 2.7053" actuatorfrcrange="-3 3"/>
               <geom name="right_shoulder_actuator_collision" size="0.0125 0.0125 0.0125" type="box" density="9600"/>
               <body name="right_upper_arm_link">
-                <joint name="right_shoulder_roll_joint" pos="0 0 0" axis="-1 0 0" range="-0.2618 2.0944" actuatorfrcrange="-3 3"/>
+                <joint name="right_shoulder_roll_joint" pos="0 0 0" axis="-1 0 0" range="-0.8727 2.0944" actuatorfrcrange="-3 3"/>
                 <geom name="right_shoulder_roll_actuator_collision" size="0.0125 0.0125 0.0125" pos="0 0 -0.015" type="box" density="9600"/>
                 <geom name="right_upper_arm_collision" size="0.02 0.09" pos="0 0 -0.09" type="cylinder" density="1200"/>
                 <body name="right_forearm_link" pos="0 0 -0.18">
@@ -122,10 +122,10 @@
 
   <actuator>
     <general name="left_shoulder_pitch_joint_position" joint="left_shoulder_pitch_joint" ctrllimited="true" ctrlrange="-2.0944 2.7053" forcelimited="true" forcerange="-3 3" biastype="affine" gainprm="60" biasprm="0 -60 -6"/>
-    <general name="left_shoulder_roll_joint_position" joint="left_shoulder_roll_joint" ctrllimited="true" ctrlrange="-0.2618 2.0944" forcelimited="true" forcerange="-3 3" biastype="affine" gainprm="60" biasprm="0 -60 -6"/>
+    <general name="left_shoulder_roll_joint_position" joint="left_shoulder_roll_joint" ctrllimited="true" ctrlrange="-0.8727 2.0944" forcelimited="true" forcerange="-3 3" biastype="affine" gainprm="60" biasprm="0 -60 -6"/>
     <general name="left_elbow_joint_position" joint="left_elbow_joint" ctrllimited="true" ctrlrange="0 2.5831" forcelimited="true" forcerange="-2 2" biastype="affine" gainprm="60" biasprm="0 -60 -6"/>
     <general name="right_shoulder_pitch_joint_position" joint="right_shoulder_pitch_joint" ctrllimited="true" ctrlrange="-2.0944 2.7053" forcelimited="true" forcerange="-3 3" biastype="affine" gainprm="60" biasprm="0 -60 -6"/>
-    <general name="right_shoulder_roll_joint_position" joint="right_shoulder_roll_joint" ctrllimited="true" ctrlrange="-0.2618 2.0944" forcelimited="true" forcerange="-3 3" biastype="affine" gainprm="60" biasprm="0 -60 -6"/>
+    <general name="right_shoulder_roll_joint_position" joint="right_shoulder_roll_joint" ctrllimited="true" ctrlrange="-0.8727 2.0944" forcelimited="true" forcerange="-3 3" biastype="affine" gainprm="60" biasprm="0 -60 -6"/>
     <general name="right_elbow_joint_position" joint="right_elbow_joint" ctrllimited="true" ctrlrange="0 2.5831" forcelimited="true" forcerange="-2 2" biastype="affine" gainprm="60" biasprm="0 -60 -6"/>
     <general name="left_gripper_finger1_joint_position" joint="left_gripper_finger1_joint" ctrllimited="true" ctrlrange="0 0.03" forcelimited="true" forcerange="-10 10" biastype="affine" gainprm="200" biasprm="0 -200 -10"/>
     <general name="right_gripper_finger1_joint_position" joint="right_gripper_finger1_joint" ctrllimited="true" ctrlrange="0 0.03" forcelimited="true" forcerange="-10 10" biastype="affine" gainprm="200" biasprm="0 -200 -10"/>
