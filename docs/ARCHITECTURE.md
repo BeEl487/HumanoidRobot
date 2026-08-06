@@ -70,6 +70,35 @@ off-device, deploy trained policies back onto the robot for on-device inference.
     per-axis config on the robot, and make sure the undervoltage trip has headroom above the
     battery's real sag-under-load voltage.
 
+### ⚠ Known hardware bug: VBUS divider mismatch (found 2026-08-06)
+
+- The physical board's VBUS sense-resistor divider measures like the firmware's **`v3.6-24V`**
+  variant (divider ratio 11.0), **not** the `v3.6-56V` variant the repo defaults to (ratio 19.0) —
+  confirmed by feeding known voltages and observing a consistent ~1.73x scaling error
+  (19.0/11.0 = 1.727), and independently confirmed by reading the ratio logic directly from
+  `Firmware/Board/v3/Inc/main.h` in the firmware source.
+- Root cause: `Firmware/tup.config`'s `CONFIG_BOARD_VERSION` selects the divider ratio at compile
+  time (`Firmware/Tupfile.lua`). This board was sold/labeled as the "56V variant" but its actual
+  sense resistors match the 24V-variant design. Because this is a clone board with no factory OTP
+  calibration burned in, `odrv0.hw_version_variant` can't be used to detect this — it just echoes
+  back whatever `HW_VERSION_VOLTAGE` the firmware was compiled with, whether or not that matches
+  the real hardware.
+- **This is already fixed in `MKS-Odrive-Mini-Firmware/ODriveFirmware.bin` in this repo** — that
+  file was verified (SHA-256 match) to be a build with `CONFIG_BOARD_VERSION=v3.6-24V`, built from
+  a working WSL toolchain (`~/MKS_ODrive_MINI_custom_firmware` in the `Ubuntu` WSL distro on this
+  machine, which has `tup`/`arm-none-eabi-gcc` already installed — the `Ubuntu-22.04` distro does
+  not). **Unconfirmed: whether this corrected build has actually been flashed to the physical
+  board(s) yet** — flashing needs `openocd`, which isn't installed anywhere on this machine as of
+  this check.
+- **Scope across the fleet:** this was diagnosed on one unit. All 8 ODrive Minis are presumably
+  the same board batch/variant, so the same divider mismatch — and the same fix — likely applies
+  to all 8, not just the one tested. Worth confirming per-unit before assuming, since a mixed batch
+  isn't impossible.
+- This also means the DC bus voltage trip thresholds are computed from `HW_VERSION_VOLTAGE` at
+  compile time (`dc_bus_overvoltage_trip_level = 1.07 * HW_VERSION_VOLTAGE`), so building for
+  `v3.6-24V` changes the overvoltage trip to ~25.7V — check this is still sane for a 12V pack
+  alongside whatever the undervoltage trip is configured to.
+
 ## 4. Low-level control — Teensy 4.1
 
 - Runs 3 independent CAN bus interfaces:
@@ -167,7 +196,16 @@ instead of just deleting them.
 - [ ] Camera setup (count / type / mounting)
 - [ ] Actual per-axis CAN node ID assignments (repo sample suggests increments of 2)
 - [ ] Actual motor model(s) and confirmed pole pairs / current limits per axis
-- [ ] Confirm ODrive firmware voltage trip thresholds are set correctly for 12V operation
+- [x] Root cause of bad VBUS readings found: board's divider matches `v3.6-24V`, not `v3.6-56V`
+      (see §3) — fix is built (`ODriveFirmware.bin` verified as a `v3.6-24V` build) but **not
+      confirmed flashed** to any board yet
+- [ ] Flash the corrected `v3.6-24V` `ODriveFirmware.bin` to all 8 units (confirm each is the same
+      board variant first) — needs `openocd`, not currently installed anywhere on this machine
+- [ ] Install `openocd` (e.g. in the `Ubuntu` WSL distro alongside the existing `tup`/
+      `arm-none-eabi-gcc` toolchain) before flashing can happen
+- [ ] After reflashing, re-verify `odrv0.vbus_voltage` reads correctly and re-check/re-tune the
+      undervoltage trip (overvoltage trip is now computed as `1.07 * 24 ≈ 25.7V` post-fix — sanity
+      check this and the undervoltage trip are both still appropriate for a 12V pack)
 - [ ] Battery pack spec (chemistry, cell count, capacity, BMS model)
 - [x] Learning approach — phased: scripted kinematic control now, teleop+imitation learning later (§8)
 - [ ] Gripper / end-effector plan for the arms
