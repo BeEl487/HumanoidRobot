@@ -1,0 +1,22 @@
+# Canonical ordered joint-name list: the index <-> joint contract used by every action/obs
+# vector in sim_env/*. Declares ORDER only — geometry, joint limits, and axes live in the URDF
+# (models/urdf/humanoid.urdf), the single source of truth for those (see config/README.md).
+# Worth keeping stable for the real robot's future ikpy-based kinematics code too.
+#
+# The gimbal is permanently out of scope for this simulation (ASSUMPTIONS.md meta-assumption
+# M1) — the arms are the entire actuated joint set.
+joint_order:
+  - left_shoulder_pitch_joint
+  - left_shoulder_roll_joint
+  - left_elbow_joint
+  - right_shoulder_pitch_joint
+  - right_shoulder_roll_joint
+  - right_elbow_joint
+
+# Gripper: only finger1 per side is independently actuated — finger2 mechanically mirrors it via
+# a MuJoCo equality constraint (build_model.py), so it isn't a free action dimension. Kept as a
+# separate list from joint_order since Milestone 6's action space treats "arm joints" and
+# "gripper" as distinct components (3 arm + 1 gripper per arm), not one flat vector.
+gripper_joint_order:
+  - left_gripper_finger1_joint
+  - right_gripper_finger1_joint

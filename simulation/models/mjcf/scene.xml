@@ -1,0 +1,38 @@
+<mujoco model="bin_picking_scene">
+  <!--
+    Hand-authored MuJoCo-only scene shell: ground, lighting, and the fixed mount point the
+    robot URDF is attached to (see simulation/scripts/build_model.py). No robot geometry lives
+    here — that stays in models/urdf/humanoid.urdf as the single source of truth.
+
+    Mount height 0.90 m: arbitrary fixed-rig height for a tabletop-reach workspace, revisited by
+    the reachability check once the table/bin are added. See ASSUMPTIONS.md "Torso" table.
+  -->
+  <compiler angle="radian"/>
+  <!--
+    implicitfast: MuJoCo's recommended integrator whenever stiff position actuators act on
+    low-inertia links (exactly this robot's small arm segments under a kp on the order of
+    tens-to-hundreds N*m/rad) — the default Euler integrator was empirically unstable here
+    (see rollout_smoke_test.py's tuning notes / ASSUMPTIONS.md), causing joint angles to diverge
+    within a handful of steps rather than settle. implicitfast keeps that stability without
+    shrinking the timestep, at negligible extra cost.
+  -->
+  <option timestep="0.002" gravity="0 0 -9.81" integrator="implicitfast"/>
+
+  <!--
+    Offscreen framebuffer sized for config/camera.yaml's largest declared resolution
+    (resolution_debug: 1280x720) -- mujoco.Renderer errors if asked to render larger than this,
+    so it must cover every resolution any script requests, not just resolution_default.
+  -->
+  <visual>
+    <global offwidth="1280" offheight="720"/>
+  </visual>
+
+  <worldbody>
+    <light name="key_light" pos="0 0 3" dir="0 0 -1" diffuse="1 1 1"/>
+    <geom name="ground" type="plane" size="5 5 0.1" rgba="0.6 0.6 0.6 1"/>
+
+    <body name="mount" pos="0 0 0.90">
+      <frame name="robot_mount"/>
+    </body>
+  </worldbody>
+</mujoco>

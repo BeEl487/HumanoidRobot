@@ -195,3 +195,21 @@ instead of just deleting them.
 - [ ] Reference "zero pose" definition (what the physical rest position of each joint looks like)
 - [ ] Teleoperation method for imitation-learning demo collection (leader arm / joystick / VR
       controller / hand-guided backdrive) — needed for Phase 2 (§8)
+
+## 10. Related work — MuJoCo RL simulation track
+
+A MuJoCo digital-twin simulation lives under `simulation/` at the repo root, built for **sim-to-real
+reinforcement learning** (Gymnasium + Stable-Baselines3, PPO/SAC) on vision-based bin-picking/sorting.
+
+This is an **independent research track**, kept deliberately separate from this document's own
+Phase 1/Phase 2 plan (§8) — it does **not** change or replace the §8 decision to use teleoperation +
+imitation learning for the real robot's manipulation learning (RL was explicitly considered and
+rejected there for reasons specific to this hardware). The simulation explores whether RL works for
+grasping in parallel, on its own track, using placeholder/estimated hardware specs (no gripper or
+camera exists on the real robot yet, and the sim's first milestones don't model the gimbal either —
+see `simulation/docs/ASSUMPTIONS.md` for every assumed value and what needs confirming before it
+informs real hardware decisions).
+
+See `simulation/README.md` for scope and setup, and `simulation/docs/ASSUMPTIONS.md` for the full
+log of every estimated dimension/mass/limit/spec used, since none of this repo's real measurements
+exist yet (per §9 above).

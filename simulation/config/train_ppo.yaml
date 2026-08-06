@@ -1,0 +1,32 @@
+# SB3 PPO smoke-test configuration. Two profiles: state-only (fast, Milestone 6 env) and
+# vision (Milestone 7's VisionWrapper, ~4x slower per ASSUMPTIONS.md's perf note). Budgets are
+# deliberately small -- this proves the training pipeline runs end to end, it is NOT expected to
+# converge/solve the task, see simulation/docs/ASSUMPTIONS.md "Task / RL" table.
+
+profiles:
+  state:
+    policy: MultiInputPolicy
+    total_timesteps: 30000
+    learning_rate: 0.0003
+    n_steps: 512
+    batch_size: 64
+    seed: 0
+    device: auto
+    # v4 added ent_coef=0.01 (an entropy bonus) to counteract exploration collapse -- it worked
+    # mechanically (std stayed at 1.53 instead of collapsing to 0.48) but underperformed v3 at
+    # every checkpoint (see training/TRAINING_LOG.md). Reverted to SB3's default (0.0, effectively
+    # unset below) for v5 -- the diagnosis wasn't wrong, but the fix wasn't the right one; v5
+    # addresses the same underlying problem (contact too rare to discover) via a curriculum
+    # instead (config/env.yaml's curriculum section), which is a more targeted fix.
+    ent_coef: 0.0
+
+  vision:
+    policy: MultiInputPolicy
+    total_timesteps: 8000
+    learning_rate: 0.0003
+    n_steps: 256
+    batch_size: 64
+    seed: 0
+    device: auto
+
+eval_episodes: 5

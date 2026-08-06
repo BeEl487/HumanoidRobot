@@ -1,0 +1,11 @@
+# Python 3.10/3.11 recommended. Re-check this compatibility matrix before installing —
+# mujoco/gymnasium/stable-baselines3/numpy pin ranges shift; these are floors, not exact pins.
+mujoco>=3.1.6
+gymnasium>=0.29,<1.1
+stable-baselines3>=2.3.0
+numpy>=1.24
+pyyaml>=6.0
+imageio>=2.34
+ikpy>=3.3
+pytest>=8.0
+tensorboard>=2.16

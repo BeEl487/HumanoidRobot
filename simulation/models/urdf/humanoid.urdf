@@ -1,0 +1,274 @@
+<?xml version="1.0"?>
+<!--
+  Canonical kinematic + geometric description of the robot's top half (torso + arms).
+  Single source of truth for link geometry, joint layout, and joint limits — see
+  simulation/docs/ASSUMPTIONS.md for the rationale behind every literal number below.
+
+  Intentionally excludes anything MuJoCo-only (actuators, contact params, cameras, the
+  gripper finger-mimic constraint, geom densities): those live in the MJCF layer built by
+  simulation/scripts/build_model.py, so this file stays a plain, reusable robot description
+  usable by the real robot's future ikpy-based kinematics code (ARCHITECTURE.md Phase 1).
+
+  Links carry <collision> geometry only, no separate <visual> — there are no real meshes yet,
+  everything is primitive shapes, so the collision geometry doubles as what MuJoCo renders.
+  No <inertial> blocks: mass/inertia are derived by MuJoCo from geometry x density, with density
+  assigned per named collision geom in build_model.py (keeps geometry and density both traceable
+  to a single documented source instead of hand-derived inertia tensors).
+
+  Scope: torso is a rigid, non-actuated mount (no gimbal) — a permanent simplification for this
+  simulation, per ASSUMPTIONS.md meta-assumption M1. Arms are the only moving subsystem.
+-->
+<robot name="humanoid_top_half">
+
+  <link name="base_link"/>
+
+  <link name="torso_link">
+    <collision name="torso_collision">
+      <geometry>
+        <box size="0.18 0.12 0.30"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="base_to_torso" type="fixed">
+    <parent link="base_link"/>
+    <child link="torso_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <!--
+    ============================================================================================
+    ARMS — the only moving subsystem in this simulation (the torso gimbal is permanently out of
+    scope, see ASSUMPTIONS.md meta-assumption M1). Both arms are identical 3-DOF serial chains:
+    shoulder_pitch -> shoulder_roll (abduction) -> elbow_flexion -> ee_mount (fixed attach frame
+    reserved for Milestone 3's gripper).
+
+    Rest-pose convention (all joint angles = 0): arms hang straight down from the shoulder,
+    fully extended (elbow straight) — the standard "arms at ease" humanoid rest pose. This keeps
+    each joint's rotation axis perpendicular to the arm's own pointing direction at every stage
+    of the chain, which is what makes shoulder_roll actually swing the arm sideways instead of
+    spinning it uselessly about its own long axis (see build notes / ASSUMPTIONS.md for why an
+    "arms forward" rest pose was considered and rejected).
+
+    Axes: shoulder_pitch rotates about the lateral (Y) axis (swings the arm forward/back in the
+    sagittal plane). shoulder_roll rotates about the fore-aft (X) axis (abduction, swings the arm
+    sideways) — mirrored in sign between left/right (left: +X, right: -X) so that a POSITIVE
+    shoulder_roll command means "raise the arm away from the body" on both sides symmetrically.
+    elbow_flexion rotates about Y again (hinge, 0 = straight, positive = curling the forearm
+    toward the upper arm). All of this is a sim-only convention — ARCHITECTURE.md §9 lists the
+    real robot's sign convention as unconfirmed; this pre-answers it for simulation purposes only.
+
+    Dimensions grounded against Poppy Torso (github.com/poppy-project/poppy-torso), an
+    open-source 3D-printed 2-arm research robot of comparable scale/purpose — see ASSUMPTIONS.md
+    meta-assumption M6 for why only proportions (not files/meshes/joint graph) were reused.
+    ============================================================================================
+  -->
+
+  <!-- ===== LEFT ARM ===== -->
+
+  <link name="left_shoulder_link">
+    <collision name="left_shoulder_actuator_collision">
+      <geometry><box size="0.025 0.025 0.025"/></geometry>
+    </collision>
+  </link>
+  <joint name="left_shoulder_pitch_joint" type="revolute">
+    <parent link="torso_link"/>
+    <child link="left_shoulder_link"/>
+    <origin xyz="0 0.11 0.05" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.0944" upper="2.7053" effort="3.0" velocity="2.0944"/>
+  </joint>
+
+  <link name="left_upper_arm_link">
+    <collision name="left_shoulder_roll_actuator_collision">
+      <origin xyz="0 0 -0.015"/>
+      <geometry><box size="0.025 0.025 0.025"/></geometry>
+    </collision>
+    <collision name="left_upper_arm_collision">
+      <origin xyz="0 0 -0.09"/>
+      <geometry><cylinder radius="0.020" length="0.18"/></geometry>
+    </collision>
+  </link>
+  <joint name="left_shoulder_roll_joint" type="revolute">
+    <parent link="left_shoulder_link"/>
+    <child link="left_upper_arm_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-0.2618" upper="2.0944" effort="3.0" velocity="2.0944"/>
+  </joint>
+
+  <link name="left_forearm_link">
+    <collision name="left_elbow_actuator_collision">
+      <origin xyz="0 0 -0.015"/>
+      <geometry><box size="0.025 0.025 0.025"/></geometry>
+    </collision>
+    <collision name="left_forearm_collision">
+      <origin xyz="0 0 -0.075"/>
+      <geometry><cylinder radius="0.018" length="0.15"/></geometry>
+    </collision>
+  </link>
+  <joint name="left_elbow_joint" type="revolute">
+    <parent link="left_upper_arm_link"/>
+    <child link="left_forearm_link"/>
+    <origin xyz="0 0 -0.18" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="0" upper="2.5831" effort="2.0" velocity="2.0944"/>
+  </joint>
+
+  <link name="left_ee_mount_link"/>
+  <joint name="left_ee_mount_joint" type="fixed">
+    <parent link="left_forearm_link"/>
+    <child link="left_ee_mount_link"/>
+    <origin xyz="0 0 -0.15" rpy="0 0 0"/>
+  </joint>
+
+  <!--
+    Placeholder parallel-jaw gripper — NO GRIPPER EXISTS ON THE REAL ROBOT. Every dimension here
+    is a proposed sim-only spec, not a hardware design; see ASSUMPTIONS.md "Gripper" table.
+    Jaw-opening axis is Y (same lateral axis the shoulder offset uses). finger1 is the actuated
+    joint; finger2 mechanically mirrors it via a MuJoCo <equality joint> constraint added in the
+    MJCF layer by build_model.py (URDF alone can't express that coupling).
+
+    Each finger's collision geometry is offset +/-0.004 m (half its own 0.008 m thickness) in Y
+    from its own joint origin, so at qpos=(0,0) the two fingers sit edge-to-edge (closed) rather
+    than fully overlapping — without this offset both boxes were coincident at rest, and the
+    resulting contact-repulsion force fought the finger1 actuator and the finger2 equality
+    constraint badly enough that neither converged anywhere near its intended target.
+  -->
+  <link name="left_gripper_base_link">
+    <collision name="left_gripper_base_collision">
+      <geometry><box size="0.03 0.04 0.02"/></geometry>
+    </collision>
+  </link>
+  <joint name="left_gripper_base_joint" type="fixed">
+    <parent link="left_ee_mount_link"/>
+    <child link="left_gripper_base_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <link name="left_gripper_finger1_link">
+    <collision name="left_gripper_finger1_collision">
+      <origin xyz="0 0.004 -0.025"/>
+      <geometry><box size="0.015 0.008 0.05"/></geometry>
+    </collision>
+  </link>
+  <joint name="left_gripper_finger1_joint" type="prismatic">
+    <parent link="left_gripper_base_link"/>
+    <child link="left_gripper_finger1_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="0" upper="0.03" effort="10.0" velocity="0.1"/>
+  </joint>
+
+  <link name="left_gripper_finger2_link">
+    <collision name="left_gripper_finger2_collision">
+      <origin xyz="0 -0.004 -0.025"/>
+      <geometry><box size="0.015 0.008 0.05"/></geometry>
+    </collision>
+  </link>
+  <joint name="left_gripper_finger2_joint" type="prismatic">
+    <parent link="left_gripper_base_link"/>
+    <child link="left_gripper_finger2_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 -1 0"/>
+    <limit lower="0" upper="0.03" effort="10.0" velocity="0.1"/>
+  </joint>
+
+  <!-- ===== RIGHT ARM (mirror of left about the torso's XZ plane) ===== -->
+
+  <link name="right_shoulder_link">
+    <collision name="right_shoulder_actuator_collision">
+      <geometry><box size="0.025 0.025 0.025"/></geometry>
+    </collision>
+  </link>
+  <joint name="right_shoulder_pitch_joint" type="revolute">
+    <parent link="torso_link"/>
+    <child link="right_shoulder_link"/>
+    <origin xyz="0 -0.11 0.05" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2.0944" upper="2.7053" effort="3.0" velocity="2.0944"/>
+  </joint>
+
+  <link name="right_upper_arm_link">
+    <collision name="right_shoulder_roll_actuator_collision">
+      <origin xyz="0 0 -0.015"/>
+      <geometry><box size="0.025 0.025 0.025"/></geometry>
+    </collision>
+    <collision name="right_upper_arm_collision">
+      <origin xyz="0 0 -0.09"/>
+      <geometry><cylinder radius="0.020" length="0.18"/></geometry>
+    </collision>
+  </link>
+  <joint name="right_shoulder_roll_joint" type="revolute">
+    <parent link="right_shoulder_link"/>
+    <child link="right_upper_arm_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="-1 0 0"/>
+    <limit lower="-0.2618" upper="2.0944" effort="3.0" velocity="2.0944"/>
+  </joint>
+
+  <link name="right_forearm_link">
+    <collision name="right_elbow_actuator_collision">
+      <origin xyz="0 0 -0.015"/>
+      <geometry><box size="0.025 0.025 0.025"/></geometry>
+    </collision>
+    <collision name="right_forearm_collision">
+      <origin xyz="0 0 -0.075"/>
+      <geometry><cylinder radius="0.018" length="0.15"/></geometry>
+    </collision>
+  </link>
+  <joint name="right_elbow_joint" type="revolute">
+    <parent link="right_upper_arm_link"/>
+    <child link="right_forearm_link"/>
+    <origin xyz="0 0 -0.18" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="0" upper="2.5831" effort="2.0" velocity="2.0944"/>
+  </joint>
+
+  <link name="right_ee_mount_link"/>
+  <joint name="right_ee_mount_joint" type="fixed">
+    <parent link="right_forearm_link"/>
+    <child link="right_ee_mount_link"/>
+    <origin xyz="0 0 -0.15" rpy="0 0 0"/>
+  </joint>
+
+  <link name="right_gripper_base_link">
+    <collision name="right_gripper_base_collision">
+      <geometry><box size="0.03 0.04 0.02"/></geometry>
+    </collision>
+  </link>
+  <joint name="right_gripper_base_joint" type="fixed">
+    <parent link="right_ee_mount_link"/>
+    <child link="right_gripper_base_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <link name="right_gripper_finger1_link">
+    <collision name="right_gripper_finger1_collision">
+      <origin xyz="0 0.004 -0.025"/>
+      <geometry><box size="0.015 0.008 0.05"/></geometry>
+    </collision>
+  </link>
+  <joint name="right_gripper_finger1_joint" type="prismatic">
+    <parent link="right_gripper_base_link"/>
+    <child link="right_gripper_finger1_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="0" upper="0.03" effort="10.0" velocity="0.1"/>
+  </joint>
+
+  <link name="right_gripper_finger2_link">
+    <collision name="right_gripper_finger2_collision">
+      <origin xyz="0 -0.004 -0.025"/>
+      <geometry><box size="0.015 0.008 0.05"/></geometry>
+    </collision>
+  </link>
+  <joint name="right_gripper_finger2_joint" type="prismatic">
+    <parent link="right_gripper_base_link"/>
+    <child link="right_gripper_finger2_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 -1 0"/>
+    <limit lower="0" upper="0.03" effort="10.0" velocity="0.1"/>
+  </joint>
+
+</robot>

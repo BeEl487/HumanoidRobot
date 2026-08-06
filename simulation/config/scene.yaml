@@ -1,0 +1,51 @@
+# Table, bin, and randomized-object scene. See simulation/docs/ASSUMPTIONS.md "Scene" table for
+# rationale. Units: SI (meters, kg) throughout.
+
+table:
+  # Table center (x, y). Originally planned at 0.30 m forward of the torso's mount point, but
+  # that put the bin center ~0.36 m from each shoulder -- just past the arm's ~0.33 m max reach
+  # (upper arm 0.18 m + forearm 0.15 m). Pulling it in enough to reach also pulls the table's near
+  # edge toward x=0, where the arms hang at rest (straight down, zero X displacement) -- a table
+  # top wide enough to support the bin unavoidably extends back to meet it. 0.22 m + a narrower
+  # (vs. originally planned 0.5x0.5 m) tabletop is the combination that clears the resting arms
+  # AND passes the reachability gate; verified by reachability_check.py + check_scene_settle.py,
+  # not just this arithmetic estimate.
+  center_xy: [0.205, 0.0]
+  top_height: 0.75 # world Z of the table surface
+  top_size_xy: [0.36, 0.30] # full width x depth of the tabletop -- sized to the bin, not oversized
+  top_thickness: 0.03
+  pedestal_size_xy: [0.16, 0.16] # single square pedestal leg (full width x depth), simplified vs. 4 legs
+
+bin:
+  # Centered on the table, sitting on its surface.
+  # Wall height cut to 1/3 (0.10 -> 0.033) for v8 -- user feedback watching rendered rollouts:
+  # tall walls made the render read as a closed tank (also addressed by lowering wall rgba alpha,
+  # see build_model.py), and physically taller walls than needed for these ~3cm objects gave the
+  # gripper less vertical room to maneuver near the wall-adjacent curriculum target below. Only Z
+  # changed -- footprint (X/Y) and floor height are untouched, so knockout-margin logic (XY only)
+  # and height_above_floor are unaffected.
+  inner_size: [0.30, 0.20, 0.033] # full inner width x depth x height
+  wall_thickness: 0.005
+
+objects:
+  # A fixed roster of object "slots" compiled into the model (MuJoCo geom type/count can't change
+  # without recompiling) -- domain_randomization.py randomizes each slot's pose every reset, and
+  # "deactivates" unused slots (for episodes wanting fewer than max_count objects) by teleporting
+  # them out of the workspace rather than removing them from the model.
+  max_count: 4
+  count_range: [1, 4]
+  # Slot shapes cycle through this list (index i uses shapes[i % len(shapes)]) -- a fixed,
+  # representative mix rather than fully free shape randomization (which would need a recompile
+  # per episode).
+  shapes: [cube, cylinder, sphere]
+  half_size_range_m: [0.012, 0.017] # half-extent (cube) / radius (sphere/cylinder)
+  mass_range_g: [25, 35]
+  spawn_margin_m: 0.03 # keep-out margin from the bin's inner walls when sampling spawn XY
+  drop_height_range_m: [0.05, 0.10] # above the bin floor, let objects fall and settle on reset
+  friction_jitter_pct: 20 # +/- this percent around each object's nominal sliding friction
+
+lighting:
+  # Randomization ranges for Milestone 7 domain randomization -- schema defined now, not yet wired
+  # into rendering (no camera-facing lighting logic exists until Milestone 7 uses it).
+  key_light_pos_jitter_m: 0.5
+  ambient_range: [0.2, 0.5]

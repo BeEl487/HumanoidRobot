@@ -1,0 +1,532 @@
+# Assumptions Log
+
+Every numeric value or design decision in `simulation/` that isn't a measured/confirmed fact about
+the real robot gets a row here, in the same change that introduces it. No placeholder is allowed to
+live only as a code or config comment — this file is the single place to check "what did the sim
+assume, and what needs a real measurement before it can inform physical hardware?"
+
+Units: SI throughout (meters, kilograms, radians, seconds) unless a column says otherwise.
+
+## Meta-assumptions (apply across the whole simulation, not tied to one part)
+
+These are structural decisions made before any numeric value was picked, driven by user direction
+and by `docs/ARCHITECTURE.md` having almost nothing measured yet (confirmed via full repo search —
+no URDF, CAD, mesh, or measurement doc exists anywhere in this repo outside ARCHITECTURE.md itself).
+
+| # | Assumption | Rationale | Confirm before real hardware? |
+|---|---|---|---|
+| M1 | Torso is modeled as a single rigid body, welded to the world — **no gimbal joints, permanently.** | User directive: the two arms are the only moving subsystem in this simulation, by design, not as a temporary build-order simplification. The real robot **does** have a 2-motor gimbal (ARCHITECTURE.md §2) — this is a deliberate, permanent scope decision for this simulation, not a claim that the real robot has no gimbal, and gimbal reintroduction is not on this project's roadmap. | **Yes — critical.** A policy trained with a fixed torso will not transfer to hardware whose torso can tilt. This is a standing, accepted sim-to-real gap for this project, not a TODO. |
+| M6 | Arm dimensions, shoulder offsets, and joint range magnitudes are cross-checked for plausibility against [Poppy Torso](https://github.com/poppy-project/poppy-torso), an open-source 3D-printed research torso+2-arm robot of comparable scale and purpose. | Poppy Torso's arms have 4 DOF (shoulder_y, shoulder_x, arm_z, elbow_y) vs. this robot's 3 (no arm-rotation joint) and different actuators (Dynamixel servos vs. ODrive Mini + BLDC), so its files/meshes/exact joint graph are **not** reused — only order-of-magnitude proportions (shoulder lateral offset ~0.077m, upper-arm segment ~0.11m, joint ranges ~100–150° per axis) as a real-world sanity check against pure guesswork. | No — this is a grounding reference for estimates, not a hardware claim about this robot. |
+| M2 | No gripper/end-effector exists on the real robot. A placeholder parallel-jaw gripper is designed for simulation purposes only (Milestone 3). | User directive, since the grasping task is meaningless without *some* end effector, and none has been chosen physically yet. | **Yes — critical.** Every gripper dimension/mass/friction value here is a simulation-only proposal, not a hardware spec. Must be replaced wholesale once real gripper hardware is chosen — do not treat any value under "Gripper" below as a design target. |
+| M3 | No camera has been chosen for the real robot, and no head/neck link exists in the architecture at all — the torso is the topmost body segment. The simulation's camera is fixed rigidly to the top-front of the torso, standing in for a "head" camera. | Most sensible default given the real architecture: a torso-mounted camera co-moves with the gimbal-driven torso tilt the same way a head-mounted camera would track gaze via neck motion — so it's a reasonable functional stand-in even though it isn't mounted on a dedicated head link. | **Yes.** Confirm whether a future head/neck mechanism is planned separately from torso tilt; if so, camera mounting geometry here should be revisited, not assumed to transfer directly. |
+| M4 | All part masses/inertias are computed by MuJoCo automatically from primitive collision geometry × a per-part material density, not hand-derived inertia tensors. | More defensible than guessing full 3×3 inertia tensors by hand; MuJoCo's compiler does this natively and correctly for primitive geoms. Densities themselves are still estimates (see per-part rows below) — only the tensor *derivation* is offloaded to the compiler, not the underlying mass estimate. | No — this is a modeling methodology choice, not a hardware claim. |
+| M5 | Control mode aims to approximate the real ODrive firmware's **position control with a trapezoidal velocity/accel-limited trajectory** (ARCHITECTURE.md §3), via a trajectory-shaping layer feeding MuJoCo position actuators — not raw torque control and not an instantaneous position actuator. | Matches the real actuator's documented behavior more closely than a naive position servo, which matters for sim-to-real transfer of any learned timing/dynamics. | Yes — once real ODrive trap-trajectory accel/velocity limits are configured on hardware, the sim's `trajectory_shaper` limits should be matched to them, not left at placeholder values. |
+
+## Torso (Milestone 1)
+
+| Parameter | Value | Rationale | Confirm before real hardware? |
+|---|---|---|---|
+| Torso box dimensions | 0.18 × 0.12 × 0.30 m (W×D×H) | No measured torso dimensions exist anywhere in the repo. Sized to plausibly enclose a small torso frame + 12V battery pack + Jetson + Teensy + 2 gimbal ODrives, at a scale consistent with the arm lengths chosen in Milestone 2. | Yes |
+| Torso lumped density | 550 kg/m³ | Backed out from a target mass guess (~3.6 kg for a lightweight frame + electronics + battery), not from a bill of materials or solid-aluminum assumption (aluminum at this volume would be ~17.5 kg, clearly wrong for a hollow/lightweight structure). | Yes — replace with a real lumped density once the torso assembly is weighed. |
+| Torso mass (derived) | ≈3.6 kg | 0.18×0.12×0.30 × 550 kg/m³ | Yes (follows from the two rows above) |
+| Mount height above ground | 0.90 m | Arbitrary fixed-rig height for a tabletop-reach workspace; revisited by the reachability check in Milestone 5. | No — sim-only rig parameter, not a real robot spec (the real robot has no defined mounting/base height either). |
+
+## Arms (Milestone 2)
+
+| Parameter | Value | Rationale | Confirm before real hardware? |
+|---|---|---|---|
+| Rest-pose convention | Arms hang straight down from the shoulder, fully extended (elbow straight), at all-zero joint angles. | Standard "arms at ease" humanoid convention; also the only convention (of the ones considered) where every joint's rotation axis is perpendicular to the arm's own pointing direction at that stage of the chain — an "arms forward at rest" alternative was tried first and rejected because it made shoulder_roll's axis coincide with the arm's pointing direction, turning it into a no-op that just spun the arm about its own axis instead of swinging it. Caught by `rollout_smoke_test.py`'s `fk_sanity_check`. | This is the sim-scoped answer to ARCHITECTURE.md §9's open "reference zero pose" item — sim-only until validated on hardware. |
+| Shoulder lateral offset from torso origin | (0, ±0.11, +0.05) m | Order-of-magnitude matched to Poppy Torso's shoulder offset (~0.077 m lateral); widened slightly for this robot's larger torso. | Yes |
+| Upper arm | Cylinder r=0.020 m, l=0.18 m, PETG density 1200 kg/m³ → mass 0.271 kg (+0.15 kg lumped actuator mass at the shoulder-roll end, see below) | Scale order-of-magnitude matched to Poppy Torso's upper-arm segment (~0.11 m to elbow, plus intermediate brackets); sized somewhat larger to reach a table-height bin. | Yes |
+| Forearm | Cylinder r=0.018 m, l=0.15 m, PETG density 1200 kg/m³ → mass 0.183 kg (+0.15 kg lumped actuator mass at the elbow end) | Same rationale as upper arm. | Yes |
+| Per-joint lumped actuator mass | 0.15 kg per joint (0.025 m cube, density 9600 kg/m³), placed at each of the 3 joints per arm (shoulder_pitch on the shoulder connector link, shoulder_roll and elbow at the proximal end of their respective links) | Stands in for the ODrive Mini + BLDC motor assembly at each joint — no real datasheet mass exists yet, so a single box of plausible density (comparable to a compact motor+driver assembly) was used rather than modeling actual motor geometry. | Yes — critical, replace with real ODrive Mini + motor mass once weighed. |
+| Joint ranges | shoulder_pitch: −120° to +155°; shoulder_roll: **−15° to +120°**; elbow: 0° to +148° | Magnitudes matched to Poppy Torso's l_shoulder_y (−120°/+155°), l_shoulder_x (~110° span), and l_elbow_y (~148° span) joints — Poppy's own zero-pose convention differs from this robot's ("arms down" here vs. Poppy's own reference), so only the range *magnitudes* were reused, not copied as absolute values against a matching zero. shoulder_roll's lower bound was widened from 0° to −15° during Milestone 5: at exactly [0°, 120°] the roll joint can only swing the arm *away* from the body from its resting-at-the-hip position, never toward the centerline, which left a dead zone between the two shoulders (±11 cm) that neither arm could reach — confirmed via `reachability_check.py` dropping to ~6% coverage. A small negative (adduction) allowance is also anatomically realistic for a shoulder joint, not purely a reachability hack. | Yes |
+| Joint velocity limit | 120°/s (2.0944 rad/s), all arm joints | Placeholder — not derived from a real motor speed/gear-ratio spec (unconfirmed per ARCHITECTURE.md §3/§9). | Yes |
+| Joint torque (effort) limit | 3.0 N·m shoulder joints, 2.0 N·m elbow | Placeholder — not derived from ODrive Mini current limit (20 A per the firmware sample config) x an actual motor torque constant, since no confirmed motor model/Kt exists yet. | Yes |
+| Sign convention | shoulder_pitch axis = lateral (Y), same both sides. shoulder_roll axis = fore-aft (X), **mirrored** between sides (left: +X, right: −X) so a positive command means "raise arm away from body" symmetrically on both arms. elbow axis = Y, same both sides, 0°=straight/positive=flexion. | A concrete, internally-consistent choice was needed to build anything; verified correct (not just internally consistent) by `fk_sanity_check` in `rollout_smoke_test.py`, which confirms shoulder_roll actually displaces the end effector sideways rather than spinning the arm in place. | Pre-answers ARCHITECTURE.md §9's open sign-convention item for simulation purposes only — real hardware sign convention still needs confirming independently. |
+| Position-actuator gains | kp=60, kv=6.0 (all 6 arm joints) | Empirically tuned via a step-response sweep (target 10°, checked settling error over the final 20% of a 3 s rollout) — kp=30 initially chosen but left ~10° of steady-state-adjacent error before tuning; kp=60/kv=6 settles to within 0.19°, well inside the 2° tolerance. | No — MuJoCo-only control parameter, not a hardware claim (though the real ODrive's position-control gains would need their own independent tuning on hardware). |
+| Integrator | `implicitfast` (MuJoCo option), not the default `Euler` | The default explicit/semi-implicit Euler integrator was empirically unstable for these joints: a kp on the order of tens-to-hundreds N·m/rad acting on the arm segments' small inertia gives a natural frequency high enough (relative to the 500 Hz physics rate) that Euler integration diverged within ~20 steps instead of settling. `implicitfast` is MuJoCo's documented fix for exactly this "stiff position actuator on a low-inertia link" scenario, at negligible extra cost, without needing to shrink the timestep. | No — numerical-methods choice, not a hardware claim. |
+
+## Gripper (Milestone 3) — sim-only proposal, no gripper exists on the real robot
+
+**Flagged prominently: every value in this table is a proposed spec for simulation purposes
+only, not a hardware design.** The real robot's arms currently terminate at the elbow.
+
+| Parameter | Value | Rationale | Confirm before real hardware? |
+|---|---|---|---|
+| Mechanism | Parallel-jaw, 2 prismatic fingers per side. finger1 is independently actuated; finger2 mechanically mirrors it via a MuJoCo `<equality joint>` constraint (finger2_qpos = finger1_qpos, direct 1:1 — finger2's joint axis is pre-flipped in the URDF so a direct copy produces symmetric opening, not a negated one). | Simplest mechanism that can grasp small objects; equality-constrained mimic joints are a standard MuJoCo pattern for coupled gripper fingers. URDF alone can't express the coupling, which is the concrete case motivating the URDF/MJCF split (build_model.py adds the constraint). | Yes — entire mechanism is a proposal, not a chosen design. |
+| Max jaw opening | 0.06 m (0.03 m travel per finger) | Sized to grasp small bin-picking objects (a few cm) with margin. | Yes |
+| Finger dimensions | 0.015 × 0.008 × 0.05 m (W×T×L) box, PETG density 1200 kg/m³ → ~7 g each | Small, light placeholder finger; same material assumption as the arm tubes. | Yes |
+| Finger rest-position offset | Each finger's collision geometry is offset ±0.004 m (half its own thickness) from its joint's local origin, so at qpos=(0,0) the fingers sit edge-to-edge (closed) rather than overlapping. | **Load-bearing fix, not cosmetic:** without this offset both finger collision boxes were coincident at rest, and the resulting contact-repulsion force fought the finger1 actuator and the finger2 equality constraint badly enough that neither converged anywhere near its commanded target (finger1 stuck ~7% of the way to a full-open command). Caught by `contact_smoke_test.py`. | No — geometric/numerical correctness fix, not a hardware claim. |
+| Gripper base | 0.03×0.04×0.02 m box, density 5000 kg/m³ → 0.12 kg | Lumped mass standing in for an unchosen small actuator (e.g. a linear servo or small motor+leadscrew) driving the jaw. | Yes |
+| Fingertip friction | sliding=1.2, torsional=0.005, rolling=0.0001 | Higher sliding friction than MuJoCo's default (1.0), assuming a rubberized grip pad. | Yes |
+| Position-actuator gains | kp=200, kv=10 (finger1 only, both sides) | Same step-response tuning approach as the arms; the much lighter/shorter-travel prismatic joint needed higher kp than the arms to settle promptly. Verified via `contact_smoke_test.py`'s open/close cycle (finger2 tracks finger1 within 1 mm outside a ~0.3 s settling transient after each target change). | No — MuJoCo-only control parameter. |
+
+## Camera (Milestone 4)
+
+| Parameter | Value | Rationale | Confirm before real hardware? |
+|---|---|---|---|
+| Mount body | Rigid, fixed to `torso_link` (MJCF-only — not part of the URDF) | No head/neck link exists in the architecture (torso is the topmost segment) and no camera has been chosen for the real robot at all (ARCHITECTURE.md §7). A torso-fixed camera co-moves with the gimbal-driven torso tilt the same way a head-mounted camera would track gaze via neck motion, so it's a reasonable functional stand-in. | Yes — revisit if a dedicated head/neck mechanism is ever planned. |
+| Mount offset | (+0.07, 0, +0.13) m from torso origin, pitched 30° down from horizontal | Places the camera near the top-front of the torso box (half-depth 0.06 m, half-height 0.15 m), angled toward the workspace in front of the robot rather than the horizon. | Yes |
+| Resolution | 640×480 default (RL training), 1280×720 debug (manual inspection, not used in training) | 640×480 is a standard small RL-image-observation resolution, fast to render at the step rates RL training needs. | No — a config choice, not a hardware claim. |
+| Horizontal FOV | 58° | Representative of a commodity Jetson/USB3-compatible global-shutter RGB module (e.g. e-CAM/See3CAM class, or a RealSense-class module's RGB stream) — no real camera has been chosen yet. | Yes |
+| FOV conversion | Horizontal FOV → MuJoCo's vertical `fovy`, computed at build time from the configured resolution's aspect ratio: `fovy = 2*atan(tan(hfov/2) / aspect)` (`scripts/build_model.py:hfov_to_fovy`) | Camera specs are conventionally quoted as horizontal FOV, but MuJoCo's `<camera fovy>` is vertical — computing this at build time (rather than hardcoding a fovy number) keeps the effective FOV correct if `resolution_default`'s aspect ratio ever changes. | No — arithmetic, not a hardware claim. |
+| Offscreen framebuffer | `<visual><global offwidth="1280" offheight="720"/></visual>` in scene.xml, sized to the largest resolution any script requests | `mujoco.Renderer` errors if asked to render larger than the model's configured offscreen buffer — this must cover `resolution_debug`, the largest declared resolution, not just `resolution_default`. | No — MuJoCo API requirement, not a hardware claim. |
+| Offscreen rendering on this Windows dev machine | Confirmed working (`camera_smoke_test.py`, non-blank renders at both configured resolutions; separately verified with a posed-arm render matching a hand-computed expected framing) | Flagged as a known cross-platform risk in the plan (GL context behavior differs from Linux/EGL) — resolved here, before the Gymnasium env (Milestone 7) depends on it. | No — environment capability, confirmed working. |
+
+### Post-Milestone-8 fix: camera field-of-view coverage
+
+**Real bug, caught by watching an actual trained-policy rollout, not by the original build-time
+checks.** The head camera's mount offset/pitch/FOV all passed every Milestone 4/5/7 verification
+(`camera_smoke_test.py`, `check_vision_env.py`) because those checks only ever rendered the object
+at the bin's *center* — which happened to be in frame. The real environment randomizes the
+object's spawn position across the whole bin footprint (`sim_env/domain_randomization.py`), and at
+the original mount_pos `[0.07, 0, 0.13]` / `pitch_down_deg: 30` / `horizontal_fov_deg: 58`, only
+about **55%** of that randomized spawn area was ever actually in frame — confirmed both by a
+rendered policy rollout showing an empty bin, and by a new dedicated check,
+`scripts/check_camera_coverage.py`, which samples object positions with the exact same
+distribution `randomize_objects()` uses and checks each against the camera's real frustum (not a
+single static snapshot). Fixed by raising the mount to the torso's top edge (`z: 0.15`), steepening
+the pitch to `55°`, and widening the lens to `90°` horizontal FOV (physically realistic for a
+close-range workspace camera — many real robot head/wrist cameras use 90-120° lenses for exactly
+this reason) — swept against `check_camera_coverage.py` rather than hand-tuned, now at 100%
+coverage, and reconfirmed against a real policy rollout (object clearly visible throughout, per
+`docs/camfix_pov_frame0.png`).
+
+**Lesson generalized:** a visual check against one fixed, convenient scene state (object at bin
+center) is not equivalent to verifying coverage across the actual randomized distribution the
+environment produces — this is why `check_camera_coverage.py` samples from
+`domain_randomization`'s own distribution rather than asserting against a single snapshot.
+
+| Parameter | Old value | New value | Confirm before real hardware? |
+|---|---|---|---|
+| Mount offset | (+0.07, 0, +0.13) m | (+0.07, 0, **+0.15**) m | Yes (as before — placeholder spec either way) |
+| Pitch | 30° down | **55°** down | Yes |
+| Horizontal FOV | 58° | **90°** | Yes |
+| Spawn-area coverage | 55% (`check_camera_coverage.py`) | **100%** | No — verification result, not a hardware claim |
+
+## Scene / environment (Milestone 5)
+
+| Parameter | Value | Rationale | Confirm before real hardware? |
+|---|---|---|---|
+| Table position | Center (0.205, 0) m | Went through three iterations, each caught by a verification script rather than eyeballed: (1) originally planned 0.30 m forward of the mount point, but `reachability_check.py` (ikpy against the real URDF) showed the bin center was ~0.36 m from each shoulder, just past the ~0.33 m max arm reach (upper 0.18 m + forearm 0.15 m) — only ~6% of bin-floor points reachable. (2) Pulled in to 0.15 m to fix reach, but that made the (necessarily bin-sized) table top overlap the arms' own resting-at-ease position (hanging straight down passes through x=0, and a table top wide enough to support the bin unavoidably extends back to meet it) — caught by `check_scene_settle.py`'s spawn-interpenetration check, not by reachability. (3) Settled at 0.205 m with a tabletop sized to the bin rather than oversized (see below): 88.9% reachable, 0 mm spawn interpenetration. | No — sim workspace layout, not a hardware claim (though it does illustrate that this arm length needs a fairly close workspace). |
+| Table dimensions | 0.36×0.30 m top (sized to the bin, not oversized), 0.03 m thick, single 0.16×0.16 m pedestal from floor to 0.75 m | Originally 0.5×0.5 m; shrunk during the table-position iteration above so the tabletop's near edge stops short of where the resting arms hang, rather than fighting that constraint with position alone. Standard table height; single pedestal is a simplification vs. 4 legs, cheap to simulate and irrelevant to the manipulation task. | No |
+| Bin | 0.30×0.20×0.10 m inner, 0.005 m walls, centered on the table | Sized to plausibly hold a handful of small graspable objects. | No |
+| Object roster | 4 fixed slots, shapes cycle [cube, cylinder, sphere, cube], half-size ~0.0145 m, mass ~30 g | MuJoCo geom type/size are compile-time properties (can't be changed without recompiling), so true per-episode shape/size randomization isn't practical at RL step rates — a fixed roster with per-episode pose/count/friction randomization is the standard approach (see `sim_env/domain_randomization.py`). | Not applicable — sim/task design choice. |
+| Object count randomization | 1–4 active per episode; inactive slots parked at world (10+slot, 10, −5) | Keeps the compiled model's body count fixed while still exposing count as an episode variable — parking far below the ground plane keeps inactive objects out of the workspace and camera frustum without deleting them. | No |
+| Object friction | Nominal sliding=0.8, torsional=0.005, rolling=0.005 (±20% jitter per episode) | MuJoCo's own default rolling friction (0.0001) is realistic for a mathematically perfect sphere but means any sphere that picks up spin off an uneven landing rolls at a small constant velocity almost indefinitely (confirmed empirically: raising rolling friction to 0.03 didn't change the steady-state outcome either — a spinning, non-slipping sphere has zero relative velocity at its contact point, so kinetic friction has nothing to dissipate). This is correct physics, not a bug, but isn't representative of the slightly-deformable small objects this roster approximates, and made a bounded-step settle check impractical. `check_scene_settle.py` therefore checks linear (not angular) velocity against an absolute threshold, not relative decay. | Yes — replace with measured friction once real graspable objects are chosen. |
+| Object friction jitter, count/pose randomization determinism | Verified via `check_domain_randomization.py`: 50 trials stay within configured ranges, same-seed calls reproduce identically | Caught a real bug during implementation: `randomize_object_friction` originally read the *current* (already-jittered) friction as its baseline each call, compounding into unbounded drift across repeated calls instead of jittering around a fixed nominal. Fixed to always reference `build_model.OBJECT_FRICTION`'s fixed baseline. | No — implementation correctness, not a hardware claim. |
+| Lighting jitter | Key light position ±0.5 m, ambient in [0.2, 0.5] | Schema/plumbing only — defined now since it's plain MuJoCo model-array mutation with no rendering dependency, but not yet exercised by any code (nothing needs it until Milestone 7's camera observations). | No — RL training technique, not a hardware claim. |
+
+## Task / RL (Milestone 6)
+
+| Parameter | Value | Rationale | Confirm before real hardware? |
+|---|---|---|---|
+| Control / physics rates | control_hz=20, physics_hz=500 (25 physics substeps per control step) | Standard RL control rate; physics rate matches models/mjcf/scene.xml's 0.002 s timestep exactly (asserted at env construction). | No |
+| Ready pose | shoulder_pitch=-60°, shoulder_roll=+40°, elbow=+60° (radians in config), applied to every active arm on reset | Chosen to put the EE roughly above the bin, arm partway extended — a deliberately non-trivial starting configuration (not the gravity-stable full-hang rest pose, which is both a poor RL starting point and closer to a kinematic singularity). This is the sim-scoped, not-yet-hardware-validated answer to ARCHITECTURE.md §9's open "reference zero pose" item. | Sim-only until validated on hardware, per the same flag as the M2 rest-pose convention. |
+| Trajectory shaping | Velocity-only ramp (no acceleration limiting) toward the commanded target, at `max_arm_joint_velocity_rad_s`/`max_gripper_velocity_m_s` from config/env.yaml | Approximates the real ODrive's trapezoidal-trajectory position control (ARCHITECTURE.md §3) well enough for a first RL-ready environment; full accel-limiting deferred as unnecessary complexity until something concrete needs it. These velocity values duplicate humanoid.urdf's `<limit velocity="...">` by hand, because MuJoCo does not preserve URDF velocity limits on compiled joints (confirmed empirically — no `jnt_velocity_limit`-equivalent array exists post-compile), so there is no way to read them back from the model at runtime; must be kept in sync manually if the URDF's velocity limits ever change. | Sim-only approximation of the real control mode; also inherits the "Yes" flags already on the underlying velocity-limit values themselves (ASSUMPTIONS.md "Arms" table). |
+| Reward shaping | distance_weight=-2.0/m, grasp_bonus=+5.0 (one-time), lift_bonus_weight=+20.0/m while grasped, step_penalty=-0.01, knockout_penalty=-5.0 | Standard dense-shaping choices (distance + event bonuses) for a first RL-ready environment; not tuned against actual training results yet (Milestone 8 is a pipeline smoke test, not a convergence run) — expect to revisit once real training data exists. | No — RL hyperparameter, not a hardware claim. |
+| Success / failure | Success: grasped AND >5 cm above bin floor, held 10 consecutive control steps (0.5 s). Failure: object center + 5 cm margin leaves the bin's inner footprint ("knocked out"). | Simple, unambiguous episode-ending conditions for a first environment. | No |
+| Single fixed grasp target | Exactly one object (`object_0`) is always the tracked target, regardless of how many objects are in the bin; `active_slots=[0]` is passed to `domain_randomization.randomize_objects` to guarantee it, rather than relying on the general random-slot-permutation path | True multi-object target selection (choosing *which* object to grasp, handling variable-cardinality observations) is a materially harder RL problem, deliberately out of scope for this milestone. This fixed-slot pinning was added after a real bug: without it, `randomize_objects(count=1)`'s random slot permutation left `object_0` parked outside the workspace in ~75% of episodes (1 in 4 chance it was the slot chosen active), caught by `check_env.py`'s scripted-controller reward check returning consistently near-flat reward regardless of controller quality. | No — env/task design choice, not a hardware claim. |
+| Both-arms generalization (6.2) | `active_arms: [left, right]` in config/env.yaml; the env's action/observation spaces, reward (closest-arm distance), and all of `check_env.py`'s verification were written generic over `active_arms` from the start, so generalizing from 6.1's single-arm config was a config change re-verified end-to-end, not a code rewrite | Avoids a "6.1 code, then 6.2 code" split that would need to be kept in sync — one implementation parameterized by config, per this repo's config-over-hardcoding convention. | No — implementation approach, not a hardware claim. |
+
+## Performance notes (Milestone 7, updated Milestone 8)
+
+| Note | Value | Context |
+|---|---|---|
+| State-only vs. vision-inclusive step rate (env only, no learning) | ~368 steps/s state-only, ~91 steps/s with the `VisionWrapper` RGB render (~4x slowdown) | Single-process, this Windows dev machine, unoptimized (rendering every step at 640x480). |
+| State-only vs. vision PPO training throughput (env + SB3 policy forward/backward) | ~88 fps state (`MultiInputPolicy` MLP), ~2 fps vision (`MultiInputPolicy` CNN feature extractor) — a ~44x slowdown, far larger than the ~4x env-only rendering slowdown above | The CNN forward/backward pass dominates once actual SB3 training (not just env stepping) is in the loop, not the rendering itself. 8000 vision timesteps took ~58 minutes wall-clock on this machine. This is the number to plan around for any future full (non-smoke-test) vision-based training run, not the env-only ~91 steps/s figure — obvious levers if throughput becomes a blocker: multiple parallel envs (`SubprocVecEnv`), a smaller CNN, or rendering less than 640x480, none implemented now since nothing has needed it yet. |
+
+## Milestone 8 — RL training smoke test (SB3 PPO)
+
+| Check | Result | Notes |
+|---|---|---|
+| State profile trains without exceptions | Pass — 30,000 timesteps, ~88 fps, ~340 s wall-clock | Checkpoint: `training/checkpoints/ppo_state_smoke_test.zip` |
+| Vision profile trains without exceptions | Pass — 8,000 timesteps, ~2 fps, ~3467 s (~58 min) wall-clock | Checkpoint: `training/checkpoints/ppo_vision_smoke_test.zip` |
+| `evaluate.py` runs deterministic eval episodes without crashing | Pass, both profiles | State: mean_reward=-83.12, success_rate=0.00/5. Vision: mean_reward=-91.61, success_rate=0.00/5. Zero success at these tiny smoke-test budgets is the expected, acceptable outcome per the plan — this milestone verifies the pipeline runs end to end, not that the policy has converged. |
+| TensorBoard logs contain reward/loss curves | Pass | `training/logs/{state,vision}/` — served locally via `python -m tensorboard.main --logdir training/logs`. |
+| Same-seed/single-env determinism on final policy weights | Pass | `scripts/check_training_determinism.py`: state profile trained twice from an identical seed (2048 timesteps, single env, no subprocess parallelism) produced bit-for-bit identical weights across all 13 policy parameter tensors — the final gate on the whole pipeline (URDF -> MuJoCo -> Gym env -> SB3). |
+
+### Follow-up: a full (non-smoke-test) training run
+
+After Milestone 8 itself was verified, a full 500,000-timestep state-profile run was made (checkpoint
+`training/checkpoints/ppo_state_full.zip`, `--save-freq 20000` for progress checkpoints, ~46 min
+wall-clock at ~88-179 fps) to see actual learning behavior, not just pipeline correctness. Reward
+trend across checkpoints (`evaluate.py`, 5-10 episodes each):
+
+| Steps | Mean reward | Grasp success |
+|---|---|---|
+| 30,000 (smoke test) | -83.1 | 0% |
+| 40,000 | -61.3 | 0% |
+| 360,000 | -50.1 | 0% |
+| 440,000 | -49.0 | 0% |
+| 500,000 (final) | -46.0 | 0% |
+
+**Read honestly:** reward climbed steadily then plateaued; grasp success never left 0%. The policy
+learned to reduce EE-to-object distance (the dominant reward term) but never discovered the
+contact-then-hold behavior the sparse grasp/lift bonuses require — distance-shaped reward alone
+didn't bridge into contact-rich manipulation at this budget. This is a real result about the
+current reward shaping (`config/env.yaml`), not a pipeline failure — Milestone 8's actual gates
+(trains without exceptions, evaluates deterministically, reproducible from a seed) all still pass
+on this run too. If pursued further, next steps would be: a shaping term for the approach-to-contact
+phase specifically (e.g. a bonus for closing the gripper near the object, not just for lifting it),
+a longer budget once shaping improves, or — consistent with ARCHITECTURE.md §8's own stated
+preference for the real robot — imitation learning from a handful of demonstrations, which
+sidesteps this exact reward-shaping gap. None of this is implemented; flagged here for whoever
+picks this up next.
+
+Also added during this run: `scripts/render_policy_rollout.py` (renders a checkpoint's rollout to
+GIF from an external camera and, optionally, the robot's own `head_camera` POV, captured from the
+same synced episode) and `scripts/watch_policy.py` (drives a checkpoint live in an interactive
+MuJoCo window via `mujoco.viewer.launch_passive`) — both useful for inspecting any future
+checkpoint without re-deriving this from scratch.
+
+### Reward revision (v2) — closing the approach-to-grasp gap
+
+Implemented the "shaping term for the approach-to-contact phase" suggested above, plus a
+correctness fix found while making that change:
+
+- **Bug fix, `sim_env/bin_picking_env.py::_contact_state`** (was `_is_grasped`): the grasp check
+  OR'd finger-contact across all active arms independently, so with both arms active
+  (`active_arms: [left, right]`) it could report "grasped" from the left arm's finger1 touching
+  plus the right arm's finger2 touching -- two different arms, not an actual enclosing grasp by
+  either one. Fixed to require both fingers of the *same* arm.
+- **New reward terms, `sim_env/rewards.py` + `config/env.yaml`**: `gripper_close_bonus_weight`
+  (rewards the nearest arm's gripper closedness, but only once EE-to-object distance is under
+  `close_proximity_threshold_m`) and `single_finger_contact_bonus` (small per-step, per-finger
+  partial credit toward the full two-finger grasp). Both are dense signal for the exact gap the
+  v1 run's plateau exposed: nothing previously told the policy that closing the gripper near the
+  object was useful at all, so the sparse grasp/lift bonuses had to be discovered by chance.
+- Re-verified `check_env.py` and `check_vision_env.py` both still pass with the new reward
+  function before starting a new run.
+- A fresh 500,000-timestep run (`ppo_state_v2`, same budget/config as the v1 run for a fair
+  comparison, both arms active) was started from scratch rather than continuing the v1
+  checkpoint -- the reward landscape changed meaningfully enough that the old value function's
+  estimates would no longer be meaningful starting points.
+
+**Checkpoint reward trend (v2, `evaluate.py`, 5 episodes unless noted):**
+
+| Steps | Mean reward | Grasp success |
+|---|---|---|
+| 100,000 | -51.5 | 0% |
+| 240,000 | -61.5 | 0% |
+| 260,000 | -50.5 | 0% |
+| 280,000 | -50.8 | 0% |
+| 300,000 | -48.7 | 0% |
+| 340,000 | -49.7 | 0% |
+| 360,000 | -48.8 | 0% |
+| 380,000 | -48.9 | 0% |
+| 400,000 | -49.6 | 0% |
+| 420,000 | **+12.0** (reward-hacking artifact, see below) | 0% |
+| 500,000 (final, 10 episodes) | -50.6 | 0% |
+
+### Reward revision (v2.1) — a real exploit found via live monitoring, not a design review
+
+The 420,000-step checkpoint's 5-episode evaluation averaged **+12.0**, sharply breaking the
+-48 to -61 pattern every other checkpoint showed. Before publishing that as progress, it was
+traced per-episode: 4 of the 5 seeds scored a normal -41 to -53; the fifth (seed 1004) scored
+**+247.9** on its own. Re-running that specific episode with per-step contact state instrumented
+(`env._contact_state()`) showed `touched_f1`/`touched_f2` both `False` for all 200 steps, and
+`object_pos` never changing (the object sat motionless on the bin floor the entire episode) --
+yet reward held steady around **+1.87/step from step 56 onward**. Root cause:
+`gripper_close_bonus_weight` (added in the v2 revision above) rewarded gripper closedness on
+*every step* the EE was merely within `close_proximity_threshold_m` of the object, with no
+requirement of ever touching it -- the policy had discovered it could park the gripper shut near
+the object and collect that bonus indefinitely, unrelated to any real grasp progress.
+
+**Fix:** the bonus now also requires actual finger contact (`touched_f1 or touched_f2`), not
+merely proximity (`sim_env/rewards.py`). Re-verified `check_env.py` passes. The final v2
+checkpoint's 10-episode evaluation (different seeds than the 5-episode checks above) came back at
+a normal -50.6 -- the exploit was real but seed-dependent/sporadic, not something the whole policy
+had collapsed into by the end of training.
+
+**General lesson, not just a one-off bug:** a per-step dense reward term with no requirement of
+continued task progress is farmable, and a small evaluation sample (5 episodes) can hide a single
+exploiting episode inside an average that superficially looks like a breakthrough. Caught here
+only because the artifact-page workflow rendered and inspected the actual footage before reporting
+a suspiciously large jump as progress -- a purely numeric eval log would have reported +12.0
+without explanation. Worth remembering for any future reward-shaping addition: check whether a
+term can be "cashed in" without genuine progress before trusting an average.
+
+A v3 run was started with that fix (gate the bonus on contact) -- but before it got far, a closer
+audit of that fix found it was still incomplete, leading to a further redesign.
+
+### Reward revision (v2.2) — replacing continuous bonuses with one-time milestones (structural fix)
+
+Re-auditing the v2.1 fix (gate `gripper_close_bonus_weight` on contact) surfaced a residual
+loophole: `finger2` mechanically mirrors `finger1` (a MuJoCo equality constraint, see the Gripper
+table), so the two fingers can't open/close independently. If the object sits off-center, only
+ONE finger may ever physically reach it. A policy could still graze that single finger against
+the object and hold position, continuously farming both the (now contact-gated) proximity bonus
+and `single_finger_contact_bonus`, without ever achieving or approaching a real two-finger grasp.
+The general problem: **any continuous per-step bonus tied to a state the agent can passively hold
+is farmable, no matter how it's gated** -- gating fixes one specific trigger condition, not the
+underlying "reward for standing still in a good-looking state" structure.
+
+**Fix (structural, not another gate):** `gripper_close_bonus_weight` and
+`single_finger_contact_bonus` were removed entirely and replaced with two ONE-TIME-per-episode
+milestone bonuses (`sim_env/rewards.py`, `sim_env/bin_picking_env.py`):
+- `touch_bonus` (+2.0): paid once, the first step ANY finger contacts the object.
+- `grasp_bonus` (+5.0, unchanged from v1/v2): paid once, the first step BOTH fingers of one arm
+  contact the object simultaneously.
+
+Both are tracked via per-episode flags (`_has_touched_this_episode`, `_has_grasped_this_episode`,
+reset only in `reset()`) rather than "changed since last step" flags -- this also closes a second
+potential loophole (repeatedly tapping contact on/off, or grasping/dropping/re-grasping, to
+re-trigger a "just changed" bonus each time). The only reward terms that still vary continuously
+are: `distance_weight * dist` (always <=0, nothing to farm -- at best you minimize an ongoing
+penalty by actually closing distance) and `lift_bonus_weight * height_above_floor` while grasped
+(tied to genuine object height, which cannot be faked without a real two-finger grasp holding the
+object up). **Verified directly**: replaying the exact exploiting scenario (checkpoint 420k,
+seed 1004) through the v2.2 reward scores -31.6, matching the normal -41 to -53 range other seeds
+showed, vs. the +247.9 the same policy/scenario scored under the v2.1-patched reward.
+
+### v3 outcome — real improvement, still no grasp
+
+`ppo_state_v3` (500k timesteps, v2.2 reward, ~19 min wall-clock at ~439 fps -- much faster than
+v1/v2 since no concurrent eval/render processes competed for CPU this run) completed the full
+budget before a halfway check could apply (it finished faster than the check's cadence).
+
+| Steps | Mean reward | Grasp success |
+|---|---|---|
+| 20,000 | -87.9 | 0% |
+| 100,000 | -46.4 | 0% |
+| 200,000 | -38.7 | 0% |
+| 300,000 (best) | **-29.0** | 0% |
+| 400,000 | -37.0 | 0% |
+| 500,000 (final, 10 episodes) | -40.2 | 0% |
+
+Unlike v1 and v2 (which plateaued around -46 to -61 for their entire runs), v3 shows a real,
+substantial improvement curve (-88 -> -29) before drifting back up slightly after 300k -- a
+genuine learning trend, not noise, and the best result across all three reward designs. Grasp
+success stayed at 0% throughout regardless.
+
+Diagnosis: the policy's action-distribution spread (`std` in the training log) narrows from ~1.0
+toward ~0.48-0.67 over a run in every one of v1/v2/v3 (a normal PPO pattern) -- but combined with
+v3's reward drifting back down after 300k, this is consistent with exploration narrowing around
+the easy, well-shaped distance-reduction behavior before the policy ever discovers the far more
+precise "close the gripper exactly on the object" behavior needed for contact. SB3's PPO defaults
+to `ent_coef=0.0` (no explicit entropy bonus), so nothing in the v1-v3 configs counteracted that.
+
+### v4 change — entropy bonus
+
+Added `ent_coef: 0.01` to `config/train_ppo.yaml`'s state profile (wired through
+`training/train_ppo.py`) -- a small, standard PPO entropy bonus (common default in robotics RL
+literature, not aggressively tuned) that keeps the action distribution from narrowing as quickly,
+trading some exploitation efficiency for sustained exploration later into training. This targets
+the specific mechanism diagnosed above, rather than repeating the same recipe with a bigger budget.
+Smoke-tested (2048 timesteps) before committing to a full run.
+
+### v4 outcome — the fix worked mechanically, but underperformed v3
+
+| Steps | v3 reward | v4 reward |
+|---|---|---|
+| 20,000 | -87.9 | -75.0 |
+| 100,000 | -46.4 | -68.6 |
+| 200,000 | -38.7 | -44.0 |
+| 300,000 | -29.0 (v3 best) | -44.8 |
+| 400,000 | -37.0 | -46.0 |
+| 500,000 (final, 10 episodes) | -40.2 | -51.1 |
+
+The entropy bonus did exactly what it was designed to do -- `std` stayed at 1.53 through the end
+of training instead of collapsing to 0.48 like v3's did. But that sustained exploration never
+converged into anything better: v4 trailed v3 at every single checkpoint and never approached
+v3's best point. Still 0% grasp success. **A real, informative negative result**: the diagnosis
+(exploration collapsing too early) was plausible, but this particular fix (blanket entropy bonus)
+made things worse, not better -- reported honestly rather than reframed as a partial win.
+
+After presenting the full v1-v4 picture (all four final results, all 0% success, v3 best overall)
+the user chose to keep iterating with a structurally different lever rather than stop or switch
+to imitation learning.
+
+### v5 — curriculum spawning
+
+Every run (v1-v4) learned to reduce EE-to-object distance efficiently regardless of reward shape
+or exploration pressure, but none discovered actual contact -- pointing at an *exploration*
+bottleneck (contact rare to stumble into across the full ~0.30x0.20 m bin), not a *capacity* one.
+
+Reverted `ent_coef` to 0 (v4's fix didn't help) and added curriculum spawning
+(`config/env.yaml`'s `curriculum` section, `sim_env/bin_picking_env.py`'s `_curriculum_spawn`):
+the object spawns in a small 0.02 m-radius region close to one arm's ready-pose reach
+(~0.21-0.23 m away, vs. up to ~0.36 m under full-bin randomization), alternating between the
+left and right arm's side each episode, instead of anywhere across the full bin footprint --
+still routes through `randomize_objects` first so the other 3 object slots get parked exactly as
+before; only object_0's spawn position is narrowed. Verified with `check_env.py` before launching.
+
+### v5 outcome — best reward of all five runs, still 0% grasp success
+
+| Steps | v3 reward | v5 reward |
+|---|---|---|
+| 20,000 | -87.9 | -70.3 |
+| 100,000 | -46.4 | -31.5 |
+| 200,000 | -38.7 | -30.9 |
+| 300,000 | -29.0 (v3 best) | -31.3 |
+| 400,000 | -37.0 | -29.9 |
+| 500,000 (final) | -40.2 | **-28.4 (v5 best)** |
+
+Curriculum spawning produced a genuinely different training dynamic, not just a better number:
+v5 converges to near-final performance by 100k steps and stays stable in the -29 to -32 band
+through 500k, in contrast to v3's peak-at-300k-then-regress curve. Final eval (10 episodes,
+seeded): mean_reward=-28.425, success_rate=0.00. Every evaluated checkpoint from 20k through
+500k had 0% grasp success -- no exception at any point in training.
+
+This refines, rather than confirms, the v4 diagnosis. The curriculum already places the object
+close to the arm (spawn radius 0.02 m, ~0.21-0.23 m from the ready pose) and the policy reliably
+converges to *near* that object early and holds position there for the rest of training without
+ever crossing into contact. That is a different failure signature than v1-v4's "never reliably
+gets close" pattern -- it now looks more like a last-mile precision problem (positioning the
+gripper accurately enough for the fingers to actually touch the object) than a broad exploration
+problem. A 64x64-unit MLP policy (SB3 PPO default, ~12k parameters) has not been ruled out as a
+capacity bottleneck for that precision, and hasn't been tested with a larger network at any point
+in v1-v5.
+
+After presenting the v3-vs-v5 comparison and the refined diagnosis, next-step options given to the
+user were: (a) tighten the curriculum further (smaller spawn radius, or a near-touching start
+position), (b) increase network capacity to test the precision-bottleneck hypothesis, (c) switch to
+imitation learning per ARCHITECTURE.md §8's existing stated preference for the real robot, or
+(d) stop here and treat v5 as the working baseline. See `training/TRAINING_LOG.md` for the full
+v1-v5 readable summary. The user chose (a), plus asked to also reward touching/closeness more
+directly -- both folded into v6, below.
+
+### v6 — tighter curriculum + bigger touch/grasp bonuses
+
+**Change** (`config/env.yaml`): `curriculum.spawn_radius_m` 0.02 -> 0.006 (object now spawns
+almost exactly at the target point); `touch_bonus` 2.0 -> 6.0, `grasp_bonus` 5.0 -> 12.0,
+`distance_weight` -2.0 -> -3.0 (steeper). Rationale: v5 reliably got close but never touched;
+theorized this could be risk-aversion (closing the last few cm risks `knockout_penalty` -5.0 for
+a touch_bonus that, at 2.0, might not have been worth the risk). Both bonuses stayed one-time
+per episode, so this doesn't reopen the v2 exploit -- only their size changed. `check_env.py`
+passed before launch.
+
+**Training note:** the first launch attempt died silently at ~65k/500k steps when its background
+shell session was torn down (not a code/env error -- checkpoints up to 60k survived and were left
+on disk). Restarted cleanly from scratch under a new run name; the full 500k-step run reported
+below is that second, complete attempt.
+
+**Outcome — reward looks worse, but a direct check shows it's a scale artifact, not a regression:**
+
+| Steps | v5 reward | v6 reward |
+|---|---|---|
+| 20,000 | -70.3 | -105.4 |
+| 100,000 | -31.5 | -42.9 |
+| 200,000 | -30.9 | -42.8 |
+| 300,000 | -31.3 | -43.5 |
+| 400,000 | -29.9 | -42.5 |
+| 500,000 (final) | -28.4 (v5 best) | -41.9 |
+
+At face value v6 is worse than v5 at every checkpoint. But v6's `distance_weight` is 1.5x steeper
+than v5's, so the same underlying behavior produces a more negative number by construction. A
+direct, reward-independent check -- raw EE-to-object distance, computed straight from body
+positions, bypassing reward weights entirely -- shows the two policies are behaviorally
+indistinguishable:
+
+| Checkpoint | mean EE-to-object distance | success rate |
+|---|---|---|
+| v5 final | 0.0645 m | 0% |
+| v6 final | 0.0665 m | 0% |
+
+2mm apart, within noise. Neither v6 change (tighter curriculum, 3x bigger touch/grasp bonuses)
+moved the policy's actual behavior at all. This is itself informative: reward *magnitude* is not
+the bottleneck, and the "risk-aversion" theory behind the bigger touch_bonus is not supported --
+tripling it produced zero change in how close the policy was willing to get.
+
+**A real finding, found while instrumenting the check above:** `ee_pos` (used for both the
+distance-shaping reward and the observation vector) is `{side}_gripper_base_link` -- the
+wrist/mount frame the gripper attaches to (see `robot_model.py`'s `ee_body_name`) -- not the
+fingertips. Per `humanoid.urdf`'s finger geometry, the actual fingertips sit ~5cm further along
+the gripper from that point. Measured directly on a real v6 rollout (seed 0):
+
+| Reference point | mean distance to object | closest approach in episode |
+|---|---|---|
+| `gripper_base_link` (what reward/obs use) | 0.0660 m | 0.0528 m |
+| actual fingertips (`finger1`/`finger2` geoms) | 0.0539 m | 0.0346 m |
+
+Confirmed: the fingertips are consistently ~1-2cm closer to the object than what the policy is
+rewarded and shown for. This has been true in every run so far (v1-v6) -- it is a measurement gap
+in the environment, not something curriculum or bonus-size tuning could ever fix. It's a partial
+explanation, not the whole story: even the truer fingertip distance still plateaus at 3-5cm, short
+of actual contact. But it is the most concrete, well-evidenced lead to come out of six iterations,
+and hasn't been tried.
+
+Checkpoint: `checkpoints/ppo_state_v6.zip`. Options presented to the user: (a) fix `ee_pos` to
+reference the fingertips instead of `gripper_base_link`, for both reward and observation -- the
+new leading hypothesis; (b) increase network capacity (still a stock 64x64 MLP across all six
+runs); (c) switch to imitation learning per ARCHITECTURE.md §8; (d) stop here, treat v5 as the
+best checkpoint (v6 didn't change behavior). See `training/TRAINING_LOG.md` for the full v1-v6
+readable summary.
+
+### v7 — fingertip reference point (aborted, superseded by v8)
+
+Implemented option (a) above: `BinPickingEnv._ee_pos()` now returns the midpoint between the
+`finger1`/`finger2` collision geoms, used for both the distance-shaping reward and the `ee_pos`
+observation, replacing `gripper_base_link`. `robot_model.ee_body_name`/`ee_body_id` stayed (still
+used by `check_env.py`'s Jacobian computation, a fine proxy since it's rigidly attached to the
+same arm DOFs) but is no longer what the reward/observation see. `check_env.py`'s scripted
+P-controller test updated to steer toward the same fingertip point it now validates. All checks
+(`check_env.py`, `check_model.py`) passed.
+
+Launched a 500k-step run. The first attempt died silently at 65k/500k when its background shell
+session was torn down (unrelated to the code change); restarted cleanly and reached 340k/500k
+before being **intentionally stopped** -- while it was running, watching v6's rendered rollout
+surfaced the wall-clearance finding below, which made it clear v7 was training under the same
+physically-blocked curriculum target as v5/v6 and was therefore unlikely to produce a clean signal
+regardless of the reference-point fix. Its surviving checkpoints (100k/200k/300k/340k, 5 episodes
+each) showed 0% success and reward plateauing around -40 -- consistent with that read, not
+conclusive on their own. Not treated as v7's "final" result; the fix itself carried forward into
+v8 rather than being re-tested alone.
+
+### v8 — wall-clearance fix: first-ever finger contact
+
+**The finding, from watching v6's re-rendered rollout (user-reported: "the cube is at the edge of
+the bin and the hand is on the other side of the bin so it gets reward for being close but its
+realy just pressing into the bin"):** the gripper was visibly pressed into the bin wall next to
+the object, not on the object. Quantified: the gripper's max jaw opening is 0.06 m
+(`docs/ASSUMPTIONS.md` "Gripper" table), but the v5/v6/v7 curriculum targets (Y=±0.08) left only
+0.02 m of clearance to the nearest wall (bin inner half-depth 0.10 m) -- physically less than a
+third of what the gripper needs to open around the object. This was true for every run since v5
+introduced the curriculum, independent of reward shape or reference point, and is the leading
+explanation for why none of them ever made contact.
+
+**Changes** (`config/scene.yaml`, `config/env.yaml`): bin wall height cut to 1/3 (0.10 -> 0.033 m
+inner Z -- also addresses separate user feedback that tall, 60%-alpha walls rendered as a closed
+aquarium; wall rgba alpha was already lowered 0.6->0.2 for the same reason, `build_model.py`);
+curriculum target Y moved from ±0.08 to ±0.02, giving 0.08 m clearance to the wall (vs. the
+gripper's 0.06 m jaw). Neither change touches X/Y bin footprint, floor height, or knockout-margin
+logic (XY-only). `check_model.py`, `check_env.py`, and `reachability_check.py` (88.9% reachable,
+gate is 80%) all passed before launch. Combined with v7's (carried-forward, not independently
+re-tested) fingertip reference point fix.
+
+**Outcome:**
+
+| Steps | reward | episodes with contact (of 10) |
+|---|---|---|
+| 20,000 | -119.7 | 0 |
+| 100,000 | -54.2 | 1 |
+| 200,000 | -54.2 | 2 |
+| 300,000 | -54.4 | 2 |
+| 400,000 | -52.1 | 1 |
+| 500,000 (final) | -51.6 | 2 |
+
+**First-ever finger contact in this project.** v1 through the aborted v7 all showed exactly zero
+contact across every evaluated checkpoint. v8's final checkpoint achieved contact
+(`_has_touched_this_episode`, verified via the environment's own contact-milestone flag, not
+eyeballed) in 2 of 10 evaluation episodes; contact first appears around 100k and plateaus at
+10-20% of episodes, never climbing further. Success rate (full 2-finger grasp + lift + 10-step
+hold) remained 0% throughout -- even in touching episodes, only one finger ever made contact
+(`touched` fires, `grasped`, which requires both fingers simultaneously, never does).
+
+Raw reward (-51.6 final) is numerically similar to v6's plateau (-41.9) but on an apples-to-apples
+basis this time (same `distance_weight`, -3.0, in both) -- v8 sits a bit worse on raw reward
+despite the genuine behavioral improvement, likely because episodes that make contact and then
+fail to grasp risk more knockout penalties than episodes that never approach that closely at all.
+
+Checkpoint: `checkpoints/ppo_state_v8.zip`. The wall-clearance diagnosis is confirmed real (contact
+was physically impossible before, now happens in ~20% of episodes) but is a partial fix, not the
+full answer -- the remaining gap is single-finger graze vs. a genuine two-finger grasp, which reads
+as a precision/control problem rather than an obstruction problem. Options presented to the user:
+(a) the queued-but-disabled `reward.stuck` anti-stall penalty (`config/env.yaml`, added this
+session per user request -- penalizes the closest arm's EE for staying near-motionless too long,
+on the theory that touch-then-freeze is exactly the pattern a stuck-penalty targets); (b) increase
+network capacity; (c) switch to imitation learning; (d) stop here with v8 (first checkpoint to ever
+make contact) as the new baseline. See `training/TRAINING_LOG.md` for the full v1-v8 readable
+summary.
