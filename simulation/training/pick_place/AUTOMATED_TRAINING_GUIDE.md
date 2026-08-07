@@ -173,6 +173,28 @@ basing this on logged metrics + trajectories, not reward values alone:
 
 ## Known limitations / TODO for the next iteration
 
+0. **Entropy-collapse ratio bug, found + fixed during pp_v10 (checking pp_v10's own periodic
+   analysis reports at the guide's stated 400k cadence, as this doc asks -- not found by accident).**
+   `self_monitor.analyze_window`'s `entropy_collapsed_early` used a ratio test
+   (`entropy_now / entropy_start < 0.25`). The logged "entropy" is already sign-corrected to real
+   policy entropy (`-entropy_loss`, see `train_ppo_pick_place.py`), and a Gaussian's differential
+   entropy is legitimately negative for a tight-but-not-degenerate distribution (std < ~0.242) --
+   crossing zero well before the policy is anywhere near deterministic. A pure ratio breaks
+   whenever start/now have opposite sign: pp_v9's and pp_v10's own 400k reports both claimed
+   "COLLAPSED EARLY" while entropy was actually *rising* (pp_v10: -0.155 -> 1.990 over the window --
+   the `ent_coef` fix from pp_v9 working exactly as intended), because a negative/positive ratio is
+   always < 0.25 regardless of the real magnitude of change. Fixed with an absolute-floor
+   (`ENTROPY_COLLAPSE_FLOOR = 0.15`, calibrated against pp_v8's confirmed real collapse --
+   1.497 -> 0.009, video-verified frozen policy -- comfortably clearing it) plus a
+   decreased-from-start check, both well-defined across sign changes. Verified directly against
+   both cases' real CSV data before trusting it (pp_v8: still flags collapsed=True; pp_v10: now
+   correctly flags collapsed=False).
+   **Same caveat as the fps bug below**: `self_monitor.py` is already imported into pp_v10's live
+   process, so this fix won't retroactively correct pp_v10's own remaining analysis reports (800k
+   onward) until pp_v10 is restarted -- when reading those, manually recompute
+   `entropy_collapsed_early` from `entropy_start`/`entropy_now` using the fixed floor+direction test
+   above rather than trusting the report's own label. Takes effect automatically starting with
+   pp_v11.
 1. Checkpoint continuation (`--init-checkpoint`) restores network weights/optimizer state only --
    NOT environment/curriculum runtime state (e.g. `start_attached_prob`'s anneal position resets
    to the config's initial value on every run). See `EXPERIMENTS.md`'s note on pp_v8.

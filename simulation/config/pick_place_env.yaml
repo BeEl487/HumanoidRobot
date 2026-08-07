@@ -38,11 +38,24 @@ suction:
   # it, to grab something. Real contact (sim_env/suction_pick_place_env.py's
   # _is_suction_touching) is required in addition to this distance check.
   max_attach_distance_m: 0.03
+  min_attached_steps_before_detach: 5  # 0.25s @ control_hz=20 -- pp_v9 -> pp_v10: a detach command
+  # is ignored until this many steps have passed since attaching, so single-step action noise
+  # crossing the activation/deactivation hysteresis band can't physically toggle the weld at all.
+  # Added alongside the attach_bonus one-episode gate (see sim_env/suction_pick_place_env.py's
+  # step()) after the user observed rapid attach/detach chatter with reward spiking each cycle.
 
 # Reward design: see sim_env/pick_place_rewards.py's module docstring for the full rationale
 # (adopts the bin-picking task's hard-won "no continuous farmable bonus" lesson from the start).
 reward:
   distance_weight: -3.0          # per meter of EE-to-cube distance, only while not attached
+  close_approach_weight: -8.0    # pp_v14 -> pp_v15: ADDITIONAL per-meter penalty (stacks on top of
+  # distance_weight) once within close_approach_range_m -- steepens the gradient specifically in
+  # the final approach so closing the last few cm matters more than it did under a flat -3.0/m the
+  # whole way. See sim_env/pick_place_rewards.py's inline comment for the evidence (3 independent
+  # runs converging to hover at 0.03-0.05m without crossing in) and why this isn't a farmable term.
+  close_approach_range_m: 0.05   # band where close_approach_weight applies -- chosen to comfortably
+  # cover the observed 0.03-0.05m hover zone across pp_v11/v13/v14 without affecting the far-field
+  # approach (episodes start with the cube much farther than this).
   attach_bonus: 12.0               # one-time, first successful suction attach (raised from 8.0 --
   # see the pp_v5 rebalance note below: attempting attach needs to look worth the risk)
   lift_bonus: 10.0                 # one-time, first time the attached cube is lifted above a useful threshold (was 8.0)
@@ -57,15 +70,51 @@ reward:
   # a mild nudge, not a tax that dominates the attach/don't-attach decision; the *_idle_penalty
   # terms below (which only fire on lack of PROGRESS, not raw distance) stay as the main
   # anti-camping mechanism, since that's what actually closed the pp_v3/v4 exploit.
-  carry_distance_weight: -2.0     # per meter of cube-to-destination-center XY distance, only while attached before lift
+  carry_distance_weight: -0.3     # per meter of cube-to-destination-center XY distance, only while attached before lift
+  # pp_v18 -> pp_v19: cut from -2.0 -- IK-verified the arm CAN reach well above lift_threshold_m
+  # from the pickup point (residual ~0 up to z=0.85, ruling out a hard kinematic ceiling), yet
+  # cube height stayed capped at 0.019-0.041m across 18 checkpoints and TWO different targeted
+  # fixes (lift_progress_penalty, premature_release_penalty raised 3x). A step-by-step trace showed
+  # why: right after attach, the arm makes a LARGE joint motion (elbow swung ~0.5 rad) with almost
+  # no height gain -- moving laterally toward the destination, not lifting. Root cause: this term
+  # was still a full -2.0/m pulling toward the destination even before the cube ever left the
+  # table, directly competing with the new lift_progress_penalty instead of the task's natural
+  # "lift first, then carry" sequencing. Cut ~85% so pre-lift, height progress dominates; the
+  # after-lift term (carry_distance_weight_after_lift, unchanged at -3.0) still drives the actual
+  # carry once lift_bonus has been earned.
   carry_distance_weight_after_lift: -3.0  # stronger carry incentive once the cube has been lifted
-  attached_idle_penalty: -0.08    # per step penalty when attached but not making carry progress before lift
+  attached_idle_penalty: -0.2     # per step penalty when attached but not making carry progress before lift
+  # pp_v8 -> pp_v9: rendered rollout (ckpt_1600032) showed the arm attaching, then freezing
+  # completely -- identical ee/cube/reward values from step ~181 to step 589 of a 600-step episode,
+  # cube height stuck at 0.017m (below lift_threshold_m 0.05, so has_lifted stayed False the whole
+  # time and this weaker pre-lift penalty applied instead of attached_idle_penalty_after_lift).
+  # Raised from -0.08 (was ~half of after-lift's -0.15) to -0.2 (now stronger) so a frozen
+  # attached-not-lifted hover can no longer be a stable positive-reward local optimum for hundreds
+  # of steps, which is what the frames showed happening every curriculum (start-attached) episode.
   attached_idle_penalty_after_lift: -0.15 # stronger idle penalty once the task should be carrying toward destination
   carry_progress_tolerance_m: 0.01 # attached progress tolerance for the idle penalty
+  # pp_v16 -> pp_v17: the carry-progress idle penalty above only ever tracked XY carry_dist, never
+  # height -- a real gap found via direct diagnostic (this exact checkpoint's policy, run on real
+  # curriculum-free episodes, attached early with 500+ steps of budget left but never crossed
+  # lift_threshold_m, capping at 0.022-0.040m every time). A policy whose XY distance happens to
+  # already be small/improving pre-lift could dodge the idle penalty while never gaining height at
+  # all. Mirrors the same progress-gated pattern (not a raw-state bonus -- doesn't reopen pp_v3/v4's
+  # exploit) for the dimension that was actually uncovered.
+  lift_progress_tolerance_m: 0.002  # smaller than carry's 0.01 -- height changes happen over a much
+  # smaller absolute range (0 to lift_threshold_m 0.05) than XY carry distance does.
+  lift_progress_penalty: -0.2       # per step once pre-lift height stops improving by at least the
+  # tolerance -- same magnitude as attached_idle_penalty, applies on top of it (not instead of).
   stage_transition_bonus: 4.0     # bonus for moving cleanly from attach/lift into the next stage
   place_bonus: 30.0               # one-time, cube at rest inside the destination box after release
   step_penalty: -0.01
-  premature_release_penalty: -3.0 # one-time, suction released while cube is outside the destination box footprint
+  premature_release_penalty: -10.0 # one-time, suction released while cube is outside the destination
+  # box footprint. pp_v17 -> pp_v18: raised from -3.0 -- video-confirmed the policy attaching,
+  # partially lifting (~0.034m), then VOLUNTARILY commanding suction off well before
+  # lift_threshold_m (0.05), not getting stuck. Root cause: lift_progress_penalty (-0.2/step,
+  # pp_v17) compounds faster than a one-time -3.0 release cost -- after ~15 stuck steps, detaching
+  # and retrying became cheaper than persisting, an unintended "cut your losses" incentive this
+  # session's own previous fix created. -10.0 keeps detach-and-retry worse than persisting for a
+  # much longer window (~50 steps / 2.5s) before it could ever look cheaper.
   collision_penalty: -0.05        # per step, upper-arm/forearm contact with the table or box walls (raised
   # from -0.02 -- still applies even to a glancing, still-moving contact; stall_penalty below is
   # the one that specifically targets getting jammed)
@@ -79,6 +128,22 @@ reward:
   stall_penalty: -0.6             # per step once stalled (collision + near-zero arm velocity, sustained)
   stall_velocity_threshold_rad_s: 0.05  # mean |qvel| across the 3 arm joints below this counts as "not moving"
   stall_steps_threshold: 10       # consecutive stalled steps (0.5s at 20Hz) before the penalty starts
+  # pp_v13 -> pp_v14 (user request): a general anti-freeze/anti-hover penalty, independent of
+  # collision -- unlike stall_penalty above (only fires when jammed against furniture), this fires
+  # on ANY sustained pre-attach stillness. Targets the freeze/park/hover-without-committing
+  # behaviors video-confirmed across pp_v8 (frozen post-attach -- not this one, see idle_steps_
+  # threshold's pre-attach-only gating), pp_v11 (frozen just outside attach range, no collision
+  # involved), and pp_v12 (parked inside the box, and separately circling in a tight ~3cm band
+  # without ever closing the final approach) -- none of which ever triggered stall_penalty since
+  # none involved a collision. Only applies while NOT attached -- attached_idle_penalty/_after_lift
+  # already cover post-attach stillness via lack of carry PROGRESS, a better-targeted signal than
+  # raw motion once genuinely aligning for a lift/release is a legitimate reason to pause briefly.
+  idle_penalty: -0.3                     # per step once idle, sustained
+  idle_velocity_threshold_rad_s: 0.05    # same threshold as stall_velocity_threshold_rad_s -- reuse, don't re-derive
+  idle_steps_threshold: 20               # 1.0s at 20Hz -- deliberately longer than stall's 10 (0.5s):
+  # this has no collision to co-occur with, so it needs to tolerate normal brief pauses (e.g.
+  # settling after a fast approach, or a deliberate stop-and-reassess) without punishing them,
+  # only genuine multi-second freezing/parking.
   # "Bulldozing" fix: user observed the policy touching the cube, pushing it away instead of
   # gripping it, then continuing to chase it -- ee_to_cube_dist can look like "progress" even
   # while shoving the cube around, so nothing previously penalized this. Only applies pre-attach
@@ -113,7 +178,9 @@ curriculum:
   # full task from scratch as it improves, instead of the shortcut being available forever and the
   # eval numbers (which now run curriculum-free via eval_mode) drifting away from what training
   # actually spends most of its time practicing.
-  start_attached_prob: 0.6  # current/initial value -- env reads this key at each reset()
+  start_attached_prob: 0.35  # pp_v21 -> pp_v22: cut from 0.6 (alongside start_carrying_prob below)
+  # for a fresh-init-only experiment -- see start_carrying_prob's comment. current/initial value --
+  # env reads this key at each reset()
   start_attached_prob_initial: 0.6
   start_attached_prob_final: 0.15
   # Arm pose (radians) curriculum episodes snap to before welding the cube on -- NOT the same as
@@ -129,6 +196,36 @@ curriculum:
     shoulder_pitch: -1.8498
     shoulder_roll: 0.0790
     elbow: 1.9343
+
+  # pp_v15 -> pp_v16: `place_success_rate` has been 0% almost the entire project (one 10% blip,
+  # pp_v8) across 15 runs and ~15M+ cumulative steps, despite pp_v9-v15 all iterating on the
+  # approach/attach stage (entropy, idle penalty, close-approach gradient) with real but plateaued
+  # results. `start_attached_prob` above exposes the carry+release gradient FROM the mid-carry
+  # point, but every one of those curriculum episodes still has to solve the full lateral carry
+  # navigation before ever practicing the actual release-in-the-box skill -- carry has never had
+  # its own curriculum shortcut the way approach+attach does. This is the same root cause pp_v2's
+  # plateau had (a skill's reward gradient never being sampled enough by chance), just one stage
+  # further down the chain. Fraction of episodes that skip straight to "already carrying, already
+  # above the destination" -- directly exposes the release-accuracy reward gradient in isolation.
+  start_carrying_prob: 0.05
+  # pp_v21 -> pp_v22: cut from 0.3, alongside start_attached_prob 0.6->0.35 above, for a
+  # fresh-init-only experiment. pp_v20 (fresh init under the OLD 0.3/0.6 ratios -- only 10%
+  # full-task-from-scratch episodes) never landed a single curriculum-free attach in 1.4M steps,
+  # markedly worse than pp_v12's earlier fresh-init test (30-40% pick by 600k-1M), which ran before
+  # start_carrying_prob existed and so had 40% full-task exposure. Suspected explanation: a policy
+  # that has never solved approach+attach needs real on-policy exposure to that exact chain to ever
+  # discover it, and 10% wasn't enough. These values give ~60% full-task episodes (1 - 0.05 - 0.35)
+  # -- MORE than pp_v12 had, generous exposure for this specific test. NOT verified to be the right
+  # long-term values for continuation runs -- if this experiment (pp_v22) works, decide deliberately
+  # whether to keep these ratios or revert toward 0.3/0.6 for future continuations, don't just leave
+  # them at whatever this comment says by default.
+  # Solved via ikpy against humanoid.urdf for world (0.16, -0.26, 0.85) -- directly above the
+  # destination box's center (config/pick_place_scene.yaml's boxes.destination.center_xy) at the
+  # same height convention as mid_carry_pose_rad -- 0.0 residual, all 3 joints within range.
+  near_dest_pose_rad:
+    shoulder_pitch: -1.9289
+    shoulder_roll: 0.9176
+    elbow: 1.5115
 
 success:
   hold_steps: 10       # consecutive control steps the cube must sit released + settled in the destination box

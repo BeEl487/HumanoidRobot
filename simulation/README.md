@@ -43,6 +43,22 @@ simulation/
   training/                RL training/eval scripts (once built — Milestone 8+)
 ```
 
+## Documentation
+
+Every doc in this folder, in reading order:
+
+- [`docs/ASSUMPTIONS.md`](docs/ASSUMPTIONS.md) — every estimated numeric value, its rationale, and a hardware-confirm flag
+- [`config/README.md`](config/README.md) — conventions for the tunable-parameter YAML files
+- [`training/TRAINING_LOG.md`](training/TRAINING_LOG.md) — narrative log of every bin-picking PPO run
+- Suction pick-place task (`training/pick_place/`):
+  - [`HANDOFF.md`](training/pick_place/HANDOFF.md) — start here: current state, no prior context needed
+  - [`AUTOMATED_TRAINING_GUIDE.md`](training/pick_place/AUTOMATED_TRAINING_GUIDE.md) — design + operating guide for the self-monitoring training pipeline
+  - [`EXPERIMENTS.md`](training/pick_place/EXPERIMENTS.md) — experiment ledger, one row per run
+  - [`TRAINING_LOG.md`](training/pick_place/TRAINING_LOG.md) — narrative log of every pick-place PPO run
+
+This whole `simulation/` track sits alongside the rest of the repo, described in
+**[`../README.md`](../README.md)** and **[`../docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md)**.
+
 ## Setup
 
 ```

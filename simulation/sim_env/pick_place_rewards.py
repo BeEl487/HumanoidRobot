@@ -33,8 +33,10 @@ def compute_step_reward(
     just_released_early: bool,
     is_arm_collision: bool,
     is_stalled: bool,
+    is_idle: bool,
     cube_disturbance: float,
     prev_carry_dist: float | None,
+    prev_height: float | None,
     has_lifted: bool,
     action: np.ndarray,
     prev_action: np.ndarray,
@@ -52,6 +54,20 @@ def compute_step_reward(
     if not is_attached:
         dist = float(np.linalg.norm(ee_pos - cube_pos))
         reward += r["distance_weight"] * dist
+        # pp_v14 -> pp_v15: `distance_weight` alone gives the same marginal reward for closing
+        # 20cm->16cm as it does for 5cm->1cm -- no extra incentive to nail the specific final
+        # approach that actually matters (max_attach_distance_m: 0.03). Across three independent
+        # runs (pp_v11, pp_v13, pp_v14) the policy converged to hovering at 0.03-0.05m without
+        # reliably crossing in -- checked the geometry directly (suction/cube geom half-sizes) and
+        # ruled out a threshold-calibration bug (real contact needs ~0.02-0.033m separation,
+        # consistent with the 0.03m gate, not looser). This is a reward-gradient gap, not a
+        # geometry bug: add a steeper ADDITIONAL gradient only inside close_approach_range_m so the
+        # final centimeters specifically matter more, without changing the far-field approach
+        # behavior. Still a continuous term tied to real state (not a fixed-value farmable bonus --
+        # closer is strictly cheaper than camping at any fixed distance), consistent with this
+        # file's no-farmable-reward principle.
+        if dist < r["close_approach_range_m"]:
+            reward += r["close_approach_weight"] * dist
     else:
         if just_lifted:
             reward += r["lift_bonus"]
@@ -65,6 +81,18 @@ def compute_step_reward(
             idle_penalty = r["attached_idle_penalty"]
         if prev_carry_dist is not None and carry_dist >= prev_carry_dist - r["carry_progress_tolerance_m"]:
             reward += idle_penalty
+        # pp_v16 -> pp_v17: this carry-progress check was the ONLY anti-camping signal pre-lift --
+        # it never looked at height at all. Direct diagnostic (running this exact checkpoint's
+        # policy on real, curriculum-free episodes) found attach succeeding early (step 31-69, 500+
+        # steps of budget still remaining -- not a time problem) but cube height capping at
+        # 0.022-0.040m, never crossing lift_threshold_m (0.05), in every attached episode. A policy
+        # whose XY carry_dist happens to already be small (or trivially improving) pre-lift could
+        # avoid the idle penalty while never gaining height at all -- exactly the observed failure.
+        # Mirrors carry_dist's already-proven-safe progress-gated pattern (not a raw-state bonus,
+        # so it doesn't reopen pp_v3/v4's exploit) but for the dimension that was actually
+        # uncovered: height progress specifically, before the first lift.
+        if not has_lifted and prev_height is not None and height_above_table <= prev_height + r["lift_progress_tolerance_m"]:
+            reward += r["lift_progress_penalty"]
 
     if just_attached:
         reward += r["attach_bonus"]
@@ -76,6 +104,8 @@ def compute_step_reward(
         reward += r["collision_penalty"]
     if is_stalled:
         reward += r["stall_penalty"]
+    if is_idle:
+        reward += r["idle_penalty"]
     if cube_disturbance > 0.0:
         reward += r["cube_disturbance_weight"] * cube_disturbance
 

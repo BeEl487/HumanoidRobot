@@ -1,0 +1,81 @@
+{
+  "checkpoints": [
+    {
+      "step": 200000,
+      "checkpoint": "checkpoints/ckpt_200000.zip",
+      "video": "videos/ckpt_200000.mp4",
+      "is_final": false,
+      "timestamp": "2026-08-07T16:06:01.757125+00:00",
+      "mean_reward": -188.91213181492245,
+      "mean_episode_length": 600.0,
+      "success_rate": 0.0,
+      "pick_success_rate": 0.4,
+      "place_success_rate": 0.0,
+      "mean_suction_cmd_rate": 0.9776666666666667,
+      "mean_max_stage": 0.4,
+      "n_episodes": 10
+    },
+    {
+      "step": 400000,
+      "checkpoint": "checkpoints/ckpt_400000.zip",
+      "video": "videos/ckpt_400000.mp4",
+      "is_final": false,
+      "timestamp": "2026-08-07T16:09:43.284110+00:00",
+      "mean_reward": -215.3200404309684,
+      "mean_episode_length": 600.0,
+      "success_rate": 0.0,
+      "pick_success_rate": 0.3,
+      "place_success_rate": 0.0,
+      "mean_suction_cmd_rate": 0.9803333333333333,
+      "mean_max_stage": 0.3,
+      "n_episodes": 10
+    },
+    {
+      "step": 600000,
+      "checkpoint": "checkpoints/ckpt_600000.zip",
+      "video": "videos/ckpt_600000.mp4",
+      "is_final": false,
+      "timestamp": "2026-08-07T16:13:23.844124+00:00",
+      "mean_reward": -249.81565780294153,
+      "mean_episode_length": 600.0,
+      "success_rate": 0.0,
+      "pick_success_rate": 0.3,
+      "place_success_rate": 0.0,
+      "mean_suction_cmd_rate": 0.891,
+      "mean_max_stage": 0.3,
+      "n_episodes": 10
+    },
+    {
+      "step": 800000,
+      "checkpoint": "checkpoints/ckpt_800000.zip",
+      "video": "videos/ckpt_800000.mp4",
+      "is_final": false,
+      "timestamp": "2026-08-07T16:17:02.888237+00:00",
+      "mean_reward": -224.6469009783304,
+      "mean_episode_length": 600.0,
+      "success_rate": 0.0,
+      "pick_success_rate": 0.3,
+      "place_success_rate": 0.0,
+      "mean_suction_cmd_rate": 0.9816666666666668,
+      "mean_max_stage": 0.3,
+      "n_episodes": 10
+    },
+    {
+      "step": 1000000,
+      "checkpoint": "checkpoints/ckpt_1000000.zip",
+      "video": "videos/ckpt_1000000.mp4",
+      "is_final": false,
+      "timestamp": "2026-08-07T16:20:38.074867+00:00",
+      "mean_reward": -236.28947122058645,
+      "mean_episode_length": 600.0,
+      "success_rate": 0.0,
+      "pick_success_rate": 0.4,
+      "place_success_rate": 0.0,
+      "mean_suction_cmd_rate": 0.9826666666666668,
+      "mean_max_stage": 0.4,
+      "n_episodes": 10
+    }
+  ],
+  "total_timesteps_target": 2000000,
+  "last_updated": "2026-08-07T16:20:38.074867+00:00"
+}
