@@ -25,9 +25,11 @@ URDF_PATH = SIM_ROOT / "models" / "urdf" / "humanoid.urdf"
 SCENE_PATH = SIM_ROOT / "models" / "mjcf" / "scene.xml"
 GENERATED_DIR = SIM_ROOT / "models" / "mjcf" / "_generated"
 GENERATED_SCENE_PATH = GENERATED_DIR / "full_scene_compiled.xml"
+GENERATED_PICK_PLACE_SCENE_PATH = GENERATED_DIR / "pick_place_scene_compiled.xml"
 JOINT_NAMES_PATH = SIM_ROOT / "config" / "joint_names.yaml"
 CAMERA_CONFIG_PATH = SIM_ROOT / "config" / "camera.yaml"
 SCENE_CONFIG_PATH = SIM_ROOT / "config" / "scene.yaml"
+PICK_PLACE_SCENE_CONFIG_PATH = SIM_ROOT / "config" / "pick_place_scene.yaml"
 
 _SHAPE_TO_GEOMTYPE = {
     "cube": mujoco.mjtGeom.mjGEOM_BOX,
@@ -279,6 +281,143 @@ def _add_table_and_bin(scene: mujoco.MjSpec, cfg: dict, include_bin: bool = True
     return bin_geometry_from_config(cfg)
 
 
+def _load_pick_place_scene_config() -> dict:
+    with open(PICK_PLACE_SCENE_CONFIG_PATH, encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
+def pick_place_geometry_from_config(cfg: dict) -> dict:
+    """(x, y, floor_top_z) for the source ("left") and destination ("right") boxes -- the single
+    formula both build_model.py (to place the box geoms) and sim_env/domain_randomization.py (to
+    know where to spawn/check the cube) use, mirroring bin_geometry_from_config's role for the
+    single-bin task."""
+    t, b = cfg["table"], cfg["boxes"]
+    floor_top_z = t["top_height"] + t["top_thickness"] + b["wall_thickness"]
+    src_x, src_y = b["source"]["center_xy"]
+    dst_x, dst_y = b["destination"]["center_xy"]
+    return {"source": (src_x, src_y, floor_top_z), "destination": (dst_x, dst_y, floor_top_z)}
+
+
+def _add_open_box(
+    scene: mujoco.MjSpec, name_prefix: str, cx: float, cy: float, floor_top_z: float,
+    inner_size: list[float], wall_thickness: float, rgba: list[float],
+) -> None:
+    """One open-top box (floor + 4 walls, all static geoms) -- factored out of
+    _add_table_and_bin's inline bin-wall code so the pick-place task's two boxes (source and
+    destination) share it instead of duplicating the geometry math."""
+    iw, idepth, ih = inner_size
+    wt = wall_thickness
+    floor_z = floor_top_z - wt / 2  # center of the floor slab
+
+    scene.worldbody.add_geom(
+        name=f"{name_prefix}_floor", type=mujoco.mjtGeom.mjGEOM_BOX,
+        pos=[cx, cy, floor_z], size=[iw / 2 + wt, idepth / 2 + wt, wt / 2], rgba=rgba,
+    )
+    wall_z = floor_z + wt / 2 + ih / 2
+    for name, sign in ((f"{name_prefix}_wall_front", +1), (f"{name_prefix}_wall_back", -1)):
+        scene.worldbody.add_geom(
+            name=name, type=mujoco.mjtGeom.mjGEOM_BOX,
+            pos=[cx + sign * (iw / 2 + wt / 2), cy, wall_z],
+            size=[wt / 2, idepth / 2 + wt, ih / 2], rgba=rgba,
+        )
+    for name, sign in ((f"{name_prefix}_wall_left", +1), (f"{name_prefix}_wall_right", -1)):
+        scene.worldbody.add_geom(
+            name=name, type=mujoco.mjtGeom.mjGEOM_BOX,
+            pos=[cx, cy + sign * (idepth / 2 + wt / 2), wall_z],
+            size=[iw / 2, wt / 2, ih / 2], rgba=rgba,
+        )
+
+
+def _add_pick_place_furniture(scene: mujoco.MjSpec, cfg: dict) -> dict:
+    """Table + two open boxes (source/"left", destination/"right") for the suction pick-place
+    task -- independent of _add_table_and_bin (the single-bin task's furniture), so that task
+    stays untouched. Returns pick_place_geometry_from_config(cfg)."""
+    t = cfg["table"]
+    cx, cy = t["center_xy"]
+    top_z = t["top_height"]
+    top_w, top_d = t["top_size_xy"]
+    ped_w, ped_d = t["pedestal_size_xy"]
+    thick = t["top_thickness"]
+
+    scene.worldbody.add_geom(
+        name="pp_table_pedestal", type=mujoco.mjtGeom.mjGEOM_BOX,
+        pos=[cx, cy, top_z / 2], size=[ped_w / 2, ped_d / 2, top_z / 2],
+        rgba=[0.55, 0.4, 0.25, 1],
+    )
+    scene.worldbody.add_geom(
+        name="pp_table_top", type=mujoco.mjtGeom.mjGEOM_BOX,
+        pos=[cx, cy, top_z + thick / 2], size=[top_w / 2, top_d / 2, thick / 2],
+        rgba=[0.6, 0.45, 0.3, 1],
+    )
+
+    geom = pick_place_geometry_from_config(cfg)
+    b = cfg["boxes"]
+    src_x, src_y, floor_top_z = geom["source"]
+    dst_x, dst_y, _ = geom["destination"]
+    # Distinct colours (amber source / green destination) so the dashboard video reads unambiguously
+    # at a glance, low alpha for the same reason bin-picking's walls were dimmed (ASSUMPTIONS.md).
+    _add_open_box(scene, "box_source", src_x, src_y, floor_top_z, b["inner_size"], b["wall_thickness"], [0.85, 0.55, 0.15, 0.35])
+    _add_open_box(scene, "box_dest", dst_x, dst_y, floor_top_z, b["inner_size"], b["wall_thickness"], [0.15, 0.65, 0.35, 0.35])
+    return geom
+
+
+def _add_pick_place_cube(scene: mujoco.MjSpec, cfg: dict, spawn_x: float, spawn_y: float, floor_top_z: float) -> None:
+    """Single free-body cube, "object_0" (same name the env/reward code expects, matching the
+    bin-picking task's convention) -- this task never needs more than one object, so there's no
+    multi-slot roster like _add_object_slots."""
+    c = cfg["cube"]
+    half = c["half_size_m"]
+    body = scene.worldbody.add_body(name="object_0", pos=[spawn_x, spawn_y, floor_top_z + half + 0.005])
+    body.add_freejoint(name="object_0_freejoint")
+    body.add_geom(
+        name="object_0_collision", type=mujoco.mjtGeom.mjGEOM_BOX,
+        size=[half, half, half], mass=c["mass_g"] / 1000.0,
+        friction=OBJECT_FRICTION, rgba=[0.9, 0.3, 0.2, 1],
+    )
+
+
+def _neutralize_gripper_fingers(scene: mujoco.MjSpec) -> None:
+    """Shrink + de-collide both sides' finger collision geoms for the suction task only. These
+    prong-shaped boxes (0.015x0.008x0.05m, sticking ~5cm past the gripper base) are leftovers from
+    the bin-picking task's finger-grasp gripper -- suction attaches via the gripper base's own
+    collision geom + a weld constraint (_add_suction_weld), not the fingers. Left in place with
+    collision enabled, they were never excluded from MuJoCo's default contact resolution (only
+    upper_arm/forearm are checked by SuctionPickPlaceEnv._is_arm_collision), so they could
+    physically snag on the box walls -- real contact forces, not just a missed reward penalty. The
+    joints/mimic-constraint/actuator stay in the model (harmless -- SuctionPickPlaceEnv holds them
+    at a fixed ctrl value and never actuates them); only their collision geoms + visibility change.
+    Bin-picking's build_spec path never calls this, so its finger-grasp gripper is untouched."""
+    for side in ("left", "right"):
+        for finger in ("finger1", "finger2"):
+            geom = scene.geom(f"{side}_gripper_{finger}_collision")
+            geom.size = [0.001, 0.001, 0.001]
+            geom.contype = 0
+            geom.conaffinity = 0
+            rgba = list(geom.rgba)
+            rgba[3] = 0.0
+            geom.rgba = rgba
+
+
+def _add_suction_weld(scene: mujoco.MjSpec, side: str) -> None:
+    """A weld equality constraint between {side}_gripper_base_link and object_0, compiled inactive
+    (active=False) -- SuctionPickPlaceEnv toggles it on/off per step via data.eq_active (a plain
+    mutable MjData array, no recompile needed, MuJoCo 3.1+) to model suction attach/detach. anchor
+    and relpose (model.eq_data) get overwritten by the env at the moment of attachment to the
+    object's CURRENT relative pose -- so the object welds on wherever it actually is when suction
+    fires, not a fixed pose baked in at compile time. See sim_env/suction_pick_place_env.py's
+    _attach_suction for the data layout ([anchor(3), relpose_pos(3), relpose_quat(4),
+    torquescale(1)] = 11 floats, mujoco.mjNEQDATA)."""
+    scene.add_equality(
+        name=f"{side}_suction_weld",
+        type=mujoco.mjtEq.mjEQ_WELD,
+        objtype=mujoco.mjtObj.mjOBJ_BODY,
+        name1=f"{side}_gripper_base_link",
+        name2="object_0",
+        active=False,
+        data=[0.0] * 11,
+    )
+
+
 def _add_object_slots(
     scene: mujoco.MjSpec, cfg: dict, bin_center_x: float, bin_center_y: float, bin_floor_z: float,
     n_objects: int | None = None,
@@ -319,6 +458,7 @@ def _add_object_slots(
 
 def build_spec(
     include_scene_furniture: bool = True, include_bin: bool = True, n_objects: int | None = None,
+    task: str = "bin_picking",
 ) -> mujoco.MjSpec:
     """Compose the editable (uncompiled) spec: scene shell + robot, attached at the fixed mount,
     plus the MuJoCo-only position actuators for every joint in config/joint_names.yaml, the
@@ -330,7 +470,13 @@ def build_spec(
     otherwise legitimately collide with nearby scene furniture -- that's a real, expected physical
     interaction once the workspace is populated, not an actuator-tuning defect, so it shouldn't
     be conflated with the actuator-gain check. Every other consumer (the Gymnasium env, the RL
-    trainer, all other verification scripts) uses the default full scene."""
+    trainer, all other verification scripts) uses the default full scene.
+
+    task="suction_pick_place" swaps the single-bin furniture for the two-box (source/destination)
+    table used by sim_env/suction_pick_place_env.py, and additionally compiles a per-side weld
+    equality constraint (inactive by default) that env toggles to model suction attach/detach.
+    include_bin/n_objects are ignored in this mode (this task always has exactly one cube, no
+    multi-object roster)."""
     scene = mujoco.MjSpec.from_file(str(SCENE_PATH))
     robot = _load_robot_spec()
 
@@ -356,7 +502,15 @@ def build_spec(
 
     _add_head_camera(scene)
 
-    if include_scene_furniture:
+    if task == "suction_pick_place":
+        _neutralize_gripper_fingers(scene)
+        pp_cfg = _load_pick_place_scene_config()
+        geom = _add_pick_place_furniture(scene, pp_cfg)
+        src_x, src_y, floor_top_z = geom["source"]
+        _add_pick_place_cube(scene, pp_cfg, src_x, src_y, floor_top_z)
+        for side in ("left", "right"):
+            _add_suction_weld(scene, side)
+    elif include_scene_furniture:
         scene_cfg = _load_scene_config()
         bin_cx, bin_cy, bin_floor_z = _add_table_and_bin(scene, scene_cfg, include_bin=include_bin)
         _add_object_slots(scene, scene_cfg, bin_cx, bin_cy, bin_floor_z, n_objects=n_objects)
@@ -366,16 +520,29 @@ def build_spec(
 
 def load_model(
     include_scene_furniture: bool = True, include_bin: bool = True, n_objects: int | None = None,
+    task: str = "bin_picking",
 ) -> tuple[mujoco.MjModel, mujoco.MjData]:
     """Build and compile the model. Also dumps the flattened MJCF for human inspection/diffing,
     but only for the default full bin-picking build -- other variants (e.g. cube_grasp_env.py's
     no-bin/single-object build) skip the dump rather than clobbering that debug artifact with a
     different scene."""
-    spec = build_spec(include_scene_furniture=include_scene_furniture, include_bin=include_bin, n_objects=n_objects)
+    spec = build_spec(
+        include_scene_furniture=include_scene_furniture, include_bin=include_bin,
+        n_objects=n_objects, task=task,
+    )
     model = spec.compile()
     data = mujoco.MjData(model)
 
-    if include_scene_furniture and include_bin and n_objects is None:
+    if task == "suction_pick_place":
+        GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+        header = (
+            "<!--\n"
+            "  GENERATED by scripts/build_model.py (task=suction_pick_place) — do NOT hand-edit.\n"
+            "  Source of truth: models/urdf/humanoid.urdf + models/mjcf/scene.xml + build_model.py.\n"
+            "-->\n"
+        )
+        GENERATED_PICK_PLACE_SCENE_PATH.write_text(header + spec.to_xml(), encoding="utf-8")
+    elif include_scene_furniture and include_bin and n_objects is None:
         GENERATED_DIR.mkdir(parents=True, exist_ok=True)
         header = (
             "<!--\n"

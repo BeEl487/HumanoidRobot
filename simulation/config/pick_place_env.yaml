@@ -1,0 +1,139 @@
+# Gymnasium suction pick-place environment. See simulation/docs/ASSUMPTIONS.md "Suction
+# pick-place" entry and sim_env/suction_pick_place_env.py.
+
+# Single arm -- both box centers (config/pick_place_scene.yaml) were verified reachable by the
+# right arm alone via ikpy before being committed, so this task doesn't need a two-arm handoff.
+active_arm: right
+
+control_hz: 20
+physics_hz: 500 # must match models/mjcf/scene.xml's <option timestep="0.002"/>
+episode_max_steps: 600 # 30s at control_hz=20 (raised from 300/15s by request) -- pp_v6/v7's
+# rollouts showed the arm spending a large fraction of the episode just navigating around/into
+# the box before ever reaching the cube; more budget per episode gives the full 4-stage chain
+# (approach -> attach -> carry -> release) more room before truncation cuts it off.
+
+max_arm_joint_velocity_rad_s: 2.0944 # 120 deg/s, matches arm joints' URDF velocity limit
+
+# Reset pose (radians) -- same as bin_picking's, still a reasonable mid-workspace starting point
+# for this task's own box layout (both boxes sit within the same general reach envelope).
+ready_pose_rad:
+  shoulder_pitch: -1.0472
+  shoulder_roll: 0.6981
+  elbow: 1.0472
+
+# The gripper fingers are NOT an RL action for this task -- suction replaces finger grasping, so
+# the fingers just hold a fixed pose (a small flat platform the suction contact point sits behind)
+# instead of opening/closing. 0.5 = mid-travel.
+gripper_fixed_pos_frac: 0.5
+
+suction:
+  # action[3] (raw, [-1,1]) > this commands suction ON. This is a logical on/off command, not a
+  # continuous force. The policy can still bounce around the threshold, so we use a small
+  # hysteresis window to avoid repeated attach/detach chatter.
+  activation_threshold: 0.2
+  deactivation_threshold: -0.2
+  # EE-to-cube distance, AT THE MOMENT suction is commanded on, above which attachment is refused
+  # even if the action requests it and even if a (spurious/graze) contact is registered -- keeps
+  # this physically suction-like: a cup has to actually be against the surface, not just clipping
+  # it, to grab something. Real contact (sim_env/suction_pick_place_env.py's
+  # _is_suction_touching) is required in addition to this distance check.
+  max_attach_distance_m: 0.03
+
+# Reward design: see sim_env/pick_place_rewards.py's module docstring for the full rationale
+# (adopts the bin-picking task's hard-won "no continuous farmable bonus" lesson from the start).
+reward:
+  distance_weight: -3.0          # per meter of EE-to-cube distance, only while not attached
+  attach_bonus: 12.0               # one-time, first successful suction attach (raised from 8.0 --
+  # see the pp_v5 rebalance note below: attempting attach needs to look worth the risk)
+  lift_bonus: 10.0                 # one-time, first time the attached cube is lifted above a useful threshold (was 8.0)
+  lift_threshold_m: 0.05          # height above table required to earn the lift bonus
+  lift_bonus_weight: 0.0          # continuous height reward is disabled to avoid attach-and-hold exploits
+  # pp_v5 rebalance: these were -8.0/-12.0 -- steep enough that the RAW per-step penalty for
+  # simply being far from the destination (unavoidable right after attaching, before any carry
+  # skill exists) already exceeded the reward for just hovering unattached near the cube
+  # (~-1 to -3/step attached vs. ~-0.16/step unattached), making any attach attempt a losing bet
+  # regardless of policy quality. Confirmed via pp_v5's mean_suction_cmd_rate=0.006 -- the policy
+  # had learned to almost never attempt suction at all. Reduced by ~4x so the raw distance term is
+  # a mild nudge, not a tax that dominates the attach/don't-attach decision; the *_idle_penalty
+  # terms below (which only fire on lack of PROGRESS, not raw distance) stay as the main
+  # anti-camping mechanism, since that's what actually closed the pp_v3/v4 exploit.
+  carry_distance_weight: -2.0     # per meter of cube-to-destination-center XY distance, only while attached before lift
+  carry_distance_weight_after_lift: -3.0  # stronger carry incentive once the cube has been lifted
+  attached_idle_penalty: -0.08    # per step penalty when attached but not making carry progress before lift
+  attached_idle_penalty_after_lift: -0.15 # stronger idle penalty once the task should be carrying toward destination
+  carry_progress_tolerance_m: 0.01 # attached progress tolerance for the idle penalty
+  stage_transition_bonus: 4.0     # bonus for moving cleanly from attach/lift into the next stage
+  place_bonus: 30.0               # one-time, cube at rest inside the destination box after release
+  step_penalty: -0.01
+  premature_release_penalty: -3.0 # one-time, suction released while cube is outside the destination box footprint
+  collision_penalty: -0.05        # per step, upper-arm/forearm contact with the table or box walls (raised
+  # from -0.02 -- still applies even to a glancing, still-moving contact; stall_penalty below is
+  # the one that specifically targets getting jammed)
+  # pp_v6 -> pp_v7: watching pp_v6's rollout showed the arm driving into a box wall and then
+  # staying jammed there for the rest of the episode -- collision_penalty alone (a flat per-step
+  # cost regardless of whether the arm is still moving through the contact or stuck dead) wasn't
+  # enough to discourage this. Mirrors the bin-picking task's reward.stuck mechanism
+  # (config/env.yaml, BinPickingEnv.step): collision AND near-zero joint velocity sustained for
+  # several consecutive steps, not collision alone -- a glancing contact while still moving isn't
+  # the failure mode, being stopped dead by one is.
+  stall_penalty: -0.6             # per step once stalled (collision + near-zero arm velocity, sustained)
+  stall_velocity_threshold_rad_s: 0.05  # mean |qvel| across the 3 arm joints below this counts as "not moving"
+  stall_steps_threshold: 10       # consecutive stalled steps (0.5s at 20Hz) before the penalty starts
+  # "Bulldozing" fix: user observed the policy touching the cube, pushing it away instead of
+  # gripping it, then continuing to chase it -- ee_to_cube_dist can look like "progress" even
+  # while shoving the cube around, so nothing previously penalized this. Only applies pre-attach
+  # (touching but not attached); once attached the cube's velocity is legitimate carry motion.
+  cube_disturbance_weight: -2.0        # per m/s of cube speed above the threshold, while touching-not-attached
+  disturbance_velocity_threshold_m_s: 0.05  # cube speed below this (e.g. gentle settling) isn't penalized
+  wasted_motion_weight: -0.05     # per unit of ||action - prev_action||, discourages jittery/wasted motion
+  knockout_penalty: -5.0          # cube falls off the table
+
+# pp_v2 plateaued: attach was learned (40% pick success at 200k) but carry+release was never
+# discovered (0% place success, mean_episode_length pinned at the full 300-step timeout every
+# eval episode -- it just holds position after attaching). Likely cause: this task has no
+# curriculum at all (full-difficulty spawn from step 1) and PPO's exploration noise (std) was
+# already collapsing toward ~0.5 by 200k, before the full 4-stage chain
+# (approach -> attach -> carry -> release) could plausibly be stumbled into by chance. Mirrors the
+# bin-picking task's own v5 fix for the same root cause (see docs/ASSUMPTIONS.md,
+# training/TRAINING_LOG.md).
+curriculum:
+  enabled: true
+  # Fraction of episodes that skip straight to the carry+release stage: the cube starts already
+  # attached to the gripper at wherever the ready pose's EE happens to be (see
+  # SuctionPickPlaceEnv.reset), instead of spawned in the source box requiring a real approach+
+  # attach first. Directly exposes the carry/place reward gradient (which pp_v2 apparently never
+  # got enough on-policy samples of) without having to re-solve attach every single episode.
+  # Remaining episodes (1 - this) run the full task from scratch, so the attach skill (already
+  # learned) keeps getting reinforced rather than forgotten.
+  #
+  # Annealed over training (PeriodicArtifactCallback, training/pick_place/train_ppo_pick_place.py)
+  # rather than held fixed for the whole run: high early (this is what unblocked the pp_v2
+  # plateau -- exposing the carry/release reward gradient before it could ever be found by chance)
+  # but decaying toward start_attached_prob_final so the policy is pushed back toward solving the
+  # full task from scratch as it improves, instead of the shortcut being available forever and the
+  # eval numbers (which now run curriculum-free via eval_mode) drifting away from what training
+  # actually spends most of its time practicing.
+  start_attached_prob: 0.6  # current/initial value -- env reads this key at each reset()
+  start_attached_prob_initial: 0.6
+  start_attached_prob_final: 0.15
+  # Arm pose (radians) curriculum episodes snap to before welding the cube on -- NOT the same as
+  # ready_pose_rad. ready_pose_rad's own EE sits at world Z=0.740, just 1cm above the knockout
+  # threshold (table_top 0.78 - table_edge_margin_m 0.05 = 0.73) and off to the side -- reusing it
+  # caused curriculum episodes to fail almost instantly (1-2 steps) regardless of policy behavior,
+  # caught by inspecting a random-action rollout before trusting the curriculum was working.
+  # This pose instead puts the EE at world (0.16, -0.12, 0.85) -- the midpoint (in Y) between the
+  # source and destination boxes, well above the table -- solved via ikpy against humanoid.urdf
+  # (0.0 residual, all 3 joints within range) so every curriculum episode starts from a real
+  # mid-carry position with room to actually practice moving toward the destination and releasing.
+  mid_carry_pose_rad:
+    shoulder_pitch: -1.8498
+    shoulder_roll: 0.0790
+    elbow: 1.9343
+
+success:
+  hold_steps: 10       # consecutive control steps the cube must sit released + settled in the destination box
+  max_speed_m_s: 0.05   # cube linear speed below this counts as "at rest"
+
+failure:
+  # cube center below (table_top height - this margin) counts as "fell off the table".
+  table_edge_margin_m: 0.05

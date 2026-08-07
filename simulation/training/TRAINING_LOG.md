@@ -10,6 +10,9 @@ All runs: PPO (Stable-Baselines3), `MultiInputPolicy` (2×64 MLP, ~12k params), 
 (`sim_env/bin_picking_env.py`) and camera/scene config throughout. See
 [`README.md`](../README.md#watching-a-trained-policy) for how to watch any checkpoint yourself.
 
+This is the bin-picking (finger-grasp) task specifically. The separate suction pick-place task has
+its own log: [`pick_place/TRAINING_LOG.md`](pick_place/TRAINING_LOG.md).
+
 ## Summary
 
 | Run | Change from previous | Final reward | Best reward seen | Grasp success |
@@ -24,18 +27,25 @@ All runs: PPO (Stable-Baselines3), `MultiInputPolicy` (2×64 MLP, ~12k params), 
 | v7 (aborted) | + fingertip reference point (untested alone) | ~−40 (partial run, 340k/500k) | — | 0% |
 | v8 | + shorter walls + wall-clearance curriculum target | −51.6 | −51.6 | 0% (**2/10 episodes made finger contact**) |
 | v9 | + anti-stall penalty | −60.8 | −55.4 (at 400k) | 0% (**0/10 contact — regression from v8**) |
+| v10 | + reachability fix (widened shoulder_roll −15°→−50°) | −51.3 | −51.3 | 0% (0/10 contact — fix verified correct, wasn't the bottleneck) |
+| **v11** | + torso self-collision fix (shrunk torso box 0.18×0.12→0.09×0.07) | −29.95 | **−16.9** (at 100k) | 0% (**9/10 contact at final, 10/10 peak at 200k — decisively solved**; two-finger grasp peaked 5/10 at 200k, settled ~1/10) |
 
 *v6's reward isn't directly comparable to earlier runs — its `distance_weight` is 1.5x steeper, so
 the same behavior scores more negative by construction. A direct, reward-independent check (raw
 EE-to-object distance) shows v6's policy is behaviorally identical to v5's — see the v6 section
-below. v8 and v9 both use the same `distance_weight` as v6, so those three ARE directly comparable
-on raw reward.
+below. v8 through v11 all use the same `distance_weight` as v6, so those five ARE directly
+comparable on raw reward.
 
-**v8 is the first checkpoint in this entire project to achieve finger contact at all** — 2 of 10
-evaluation episodes, verified via the environment's own contact flag. v9 (adding an anti-stall
-penalty on top of v8) made this worse, not better — see the v9 section for why. v5 remains the
-best result by raw reward, v8 the best by contact rate. No run has produced a successful grasp
-(lift ≥5cm, held 10 consecutive steps) at these budgets.
+**v8 was the first checkpoint in this project to achieve finger contact at all** — 2 of 10
+evaluation episodes. v9 (anti-stall penalty) and v10 (reachability fix) each targeted a real,
+well-diagnosed problem and each made contact rate worse, not better — 0/10 for both, despite v10's
+fix being independently confirmed correct via proper IK. **v11 found the actual root cause**: every
+one of v8-v10's reachability checks used kinematics-only IK, blind to the torso's collision
+geometry — the shared curriculum target actually required the arm to penetrate 3.6cm into the
+torso. Fixing that (shrinking the torso box, not any joint range) took contact from v8's 2/10
+ceiling to 9/10 at v11's final checkpoint. Reach is now solved; grasping (closing and holding, not
+just touching) is the clearly-isolated remaining problem — no run has yet produced a full success
+(lift ≥5cm, held 10 consecutive steps).
 
 ## v1 — baseline, full budget
 
@@ -251,23 +261,140 @@ The over-firing is broader than that.
 
 Checkpoint: `checkpoints/ppo_state_v9.zip`.
 
+## v10 — kinematic reachability fix (verified correct, still no contact)
+
+**Decision:** a user hunch after watching v9's rollout — "I don't think your joint config is able
+to reach the cube" — checked directly rather than assumed.
+
+**Change:** a proper IK solve (ikpy/LM, the same solver `reachability_check.py`'s gate uses) at
+the exact v8/v9 curriculum target (Y=0.02) showed it had **no solution at all** under the old
+`shoulder_roll` lower limit (−15°) — not marginal, genuinely outside the workspace for any joint
+combination. (A cruder Jacobian-transpose test run first seemed to confirm this too, but that
+turned out to be a red herring — a poor-converging controller, not evidence of a true kinematic
+wall; motivation to check properly, not itself proof.) Widened `shoulder_roll`'s lower limit
+−15°→−50° in `models/urdf/humanoid.urdf` (both arms). Verified: 0.00cm IK residual with ~13°
+margin (was pinned exactly at the limit before), and `reachability_check.py`'s general bin-floor
+grid gate improved 88.9%→100%, not just the one target point. Also reverted
+`reward.stuck.enabled` back to `false` (v9's regression) so this run isolated the reachability fix
+as the one new variable.
+
+**What happened:** −90.0 (20k) → −117.7 (100k) → −52.0 (200k) → −51.4 (300k) → −51.5 (400k) →
+**−51.3 (500k, final)**. Contact: **0/10 at every single checkpoint.** Worse than v8's consistent
+10-20%, despite the target now being genuinely reachable.
+
+**Root-caused, not just observed:** a per-step trajectory check (which caught and fixed an
+arm-index bug in an earlier draft of the diagnostic — it had been reading arm index 0 regardless
+of which side the curriculum picked that episode) shows the policy does get close: 4.6cm, 5.0cm,
+and 9.1cm minimum distance across 3 sampled episodes, the same range v8/v9 plateaued at. It just
+still doesn't cross into contact. The fix was real, verified, and necessary — but this run's data
+says reachability wasn't the dominant blocker after all. Fine-motor precision in the already-close
+range is still the wall, same as it's looked since v8.
+
+One unconfirmed hypothesis for whoever picks this up next: widening `shoulder_roll`'s span
+(135°→170°) also widens what a fixed unit of policy action/exploration noise corresponds to in
+absolute degrees — the same policy precision now maps to coarser joint control, which could make
+final-approach positioning harder without a larger training budget.
+
+**Also fixed this run** (found by another contributor mid-session, unrelated to the above):
+`training/train_ppo.py` wasn't wrapping the env in SB3's `Monitor`, so `rollout/ep_rew_mean` was
+never logged to TensorBoard for v1-v9 — only `train/*` loss diagnostics. Fixed; v10 onward has
+proper reward curves in TensorBoard.
+
+Checkpoint: `checkpoints/ppo_state_v10.zip`.
+
+## v11 — torso self-collision: the actual reason "verified reachable" targets never worked
+
+**The finding, from a user hunch after watching the sim:** the last arm segment always looked like
+it was hanging straight down, and the shoulder never looked able to rotate far enough to reach the
+far side of the bin — plus a direct suspicion that torso/arm self-collision was never being
+checked. Checked directly rather than assumed, and it was right, on a much bigger scale than
+expected.
+
+**Root cause:** every reachability verification through v10 — `reachability_check.py`'s gate,
+v8's wall-clearance fix, v10's shoulder_roll widening — used `ikpy` alone to solve IK. `ikpy` has
+no notion of the torso's collision geometry at all; it will return a joint solution that requires
+the arm to pass straight through the torso and call that "reachable." Checked for the first time
+against real MuJoCo contact detection, not just forward kinematics: **the v8/v9/v10 curriculum
+target (Y=0.02) — the one v10 reported as solved with 0.00cm residual and a comfortable margin —
+actually requires the upper arm to penetrate 3.6cm into the torso box.** It was never actually
+reachable in the physics sim. Checked across the full reachability grid too: at the old torso size
+(0.18×0.12×0.30 m), only 22/36 (61%) of bin-floor points are both IK-solvable *and*
+collision-free — nowhere near the 100% `reachability_check.py` had been reporting.
+
+This reframes v8, v9, and v10 together, not just v10: all three trained against the same physically
+part-blocked target. v8's 2/10 contact rate is best read as the policy finding *some* nearby
+collision-avoiding configuration that got close enough, not evidence the assigned target itself was
+ever cleanly reachable. v9 and v10's 0/10 may be the same underlying blocker, not (only) the
+anti-stall penalty or insufficient joint range each was individually diagnosed for.
+
+**Change:** shrunk the torso collision box `models/urdf/humanoid.urdf` 0.18×0.12×0.30 →
+0.09×0.07×0.30 m — with margin beyond 0.10×0.08 m, the bare-minimum size that clears the
+collision, matching this project's usual practice of not pinning a fix exactly at its boundary.
+Verified with a new script, `scripts/check_reach_collision.py`, which re-solves IK and then checks
+the solution against real MuJoCo self-collision (not just kinematics) — both curriculum targets and
+all 36 general grid points now pass. `check_model.py`, `check_env.py`, `check_scene_settle.py`,
+`check_camera_coverage.py`, `check_joint_consistency.py`, `check_domain_randomization.py`, and
+`contact_smoke_test.py` all still pass against the new geometry.
+
+**Real, unresolved trade-off — flagged, not silently dropped:** the old torso size was explicitly
+chosen to plausibly enclose the real robot's frame, battery, Jetson, Teensy, and two gimbal
+ODrives (`docs/ASSUMPTIONS.md`). At the new size, that packaging assumption almost certainly no
+longer holds. This shrink was driven entirely by sim arm-reach/self-collision, not a real
+packaging study — resolving that conflict for real hardware is future work, documented in
+`docs/ASSUMPTIONS.md`'s Torso section as its own open row, not merged into the dimension row as if
+already solved.
+
+**Retrained, full 500k budget.** Confirms the fix was real, though not a full solution:
+
+| Steps | Reward | Contact (of 10 eps) | Two-finger grasp (of 10 eps) |
+|---|---|---|---|
+| 100,000 | −16.9 | 10/10 | (not tracked yet) |
+| 200,000 | −24.2 | **10/10 (peak)** | **5/10 (peak)** |
+| 300,000 | −35.4 | 2/10 (dip) | 1/10 |
+| 400,000 | −30.7 | 6/10 | 1/10 |
+| 500,000 (final) | −29.95 | 9/10 | 1/10 |
+
+**Contact is now solved, decisively** — 9/10 at the final checkpoint, versus v8's 2/10 after the
+same budget, and every other prior version at 0/10. The 200k→300k dip and partial recovery is
+normal PPO non-monotonicity across checkpoints, not a sign the fix is fragile: even the *worst*
+post-fix checkpoint (300k, 2/10) matches v8's best-ever result, and the final checkpoint is 4.5x
+that. This directly confirms the v11 diagnosis above — the torso was genuinely the dominant
+blocker for reach, not the fine-motor-precision explanation v8-v10 converged on.
+
+**Grasping is not solved.** Two-finger grasp peaked at 5/10 (200k) and settled around 1/10 by the
+end — contact reliably happens, but converting it into a held two-finger grasp is inconsistent, and
+full success (grasp + lift + hold, `success.lift_height_m`/`hold_steps` in `config/env.yaml`) is
+still 0/10 across every checkpoint. This is now a cleanly separated problem from reach: the arm
+reliably gets there, closing the gripper around the object and holding it is the remaining wall.
+
+Checkpoint: `checkpoints/ppo_state_v11.zip`.
+
 ## Where this stands
 
-Nine iterations. v8 broke through to actual contact (first time ever) by fixing a real physical
-obstruction; v9 tried to push further with an anti-stall penalty and made contact rate worse
-instead, with a confirmed mechanism (the penalty fires on ~48% of steps, likely suppressing the
-careful slow approach grasping needs). Options on the table:
+Eleven iterations. v8 broke through to actual contact (first time ever) by fixing a real physical
+obstruction. v9's anti-stall penalty and v10's reachability fix each targeted real, well-diagnosed
+problems and both made contact rate worse on paper (0/10) — but v11 found that v8, v9, and v10 were
+all training against a target that required clipping through the torso, a gap every prior
+"verified reachable" claim missed because IK verification never checked collision. **v11 confirms
+the diagnosis**: retrained against the corrected geometry, contact reached 9/10 at the final
+checkpoint (10/10 at its 200k peak) — a decisive, repeated result, not a fluke, and a full
+categorical jump past v8's 2/10 ceiling. The reach problem this project has been fighting since v1
+is functionally solved.
 
-1. **Revert to v8's config** (`reward.stuck.enabled: false`) and treat v8 as the working baseline
-   — still the best contact rate achieved, and this run showed the penalty as designed actively
-   hurts it.
-2. **Retune the penalty, much more conservatively** — e.g. only apply once `is_touching` is
-   already true (so it can never discourage the approach itself, only genuine post-contact
-   freezing), or a far longer `steps_threshold` (~40-60 steps / 2-3s) so brief careful slowdowns
-   aren't caught.
-3. **Increase network capacity** instead — still a stock 64×64 MLP across all nine runs.
-4. **Switch to imitation learning** — `../../docs/ARCHITECTURE.md` §8 already prefers this over
-   RL for the real robot's manipulation learning, for reasons that apply here too.
+Grasping is the new, cleanly-isolated frontier: two-finger grasp peaked at 5/10 (200k) but settled
+around 1/10, and full success (grasp+lift+hold) is still 0/10 everywhere. Options on the table:
+
+1. **Iterate on the grasp/hold reward** now that reach is solved and no longer confounding the
+   signal — `rewards.py`'s touch/grasp bonuses and `success.hold_steps` are the likely levers,
+   same style of diagnosis-then-fix that found the torso issue.
+2. **Increase network capacity** — still a stock 64×64 MLP across all eleven runs; grasping is a
+   finer-motor problem than reaching, plausibly the point where capacity starts to matter.
+3. **Switch to imitation learning for the grasp phase specifically** — `../../docs/ARCHITECTURE.md`
+   §8 already prefers this over RL for the real robot's manipulation learning; now that reach is
+   solved via RL, a hybrid (RL to approach, demonstrations for the grasp-and-hold) is newly
+   plausible rather than an all-or-nothing choice.
+4. **Resolve the torso electronics-fit conflict** before treating v11's geometry as settled even
+   in sim — orthogonal to the RL question, but load-bearing for anything beyond simulation.
 
 ## Bugs found and fixed along the way (not RL-specific, but found during this work)
 

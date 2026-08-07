@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Training Runs</title>
+<style>
+  :root {
+    --bg: #0b0f14; --panel: #12181f; --panel-2: #171f28; --border: #263140; --border-strong: #37475a;
+    --text: #dfe6ee; --text-dim: #8b9baf; --text-faint: #566577;
+    --accent: #4fa8e0; --accent-strong: #7cc4f2; --accent-bg: #16283a;
+    --good: #46b57d; --good-bg: #12271c; --good-border: #245038;
+    --warn: #d9a441; --warn-bg: #2c220f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg); color: var(--text); margin: 0; padding: 2rem 1.25rem 4rem;
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif; line-height: 1.5;
+  }
+  code, .mono { font-family: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace; }
+  main { max-width: 920px; margin: 0 auto; }
+  header { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem;
+    padding-bottom: 1rem; margin-bottom: 1.25rem; border-bottom: 1px solid var(--border); }
+  .eyebrow { font-size: 0.72rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-faint); margin: 0 0 0.4rem; }
+  h1 { font-size: 1.4rem; font-weight: 700; margin: 0; }
+  #pollStatus { font-size: 0.74rem; color: var(--text-faint); text-align: right; white-space: nowrap; }
+
+  .tabs { display: flex; gap: 0.4rem; margin-bottom: 1.5rem; border-bottom: 1px solid var(--border); }
+  .tab-btn {
+    font-family: inherit; font-size: 0.88rem; background: none; color: var(--text-dim);
+    border: none; border-bottom: 2px solid transparent; padding: 0.6rem 0.2rem; margin-right: 1.2rem;
+    cursor: pointer;
+  }
+  .tab-btn:hover { color: var(--text); }
+  .tab-btn.active { color: var(--accent-strong); border-bottom-color: var(--accent); }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
+  select {
+    font-family: inherit; font-size: 0.88rem; background: var(--panel); color: var(--text);
+    border: 1px solid var(--border-strong); border-radius: 6px; padding: 0.45rem 0.7rem;
+  }
+  .controls { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 1.25rem; }
+  .pill { font-size: 0.7rem; padding: 0.2rem 0.55rem; border-radius: 99px; border: 1px solid var(--border);
+    background: var(--panel-2); color: var(--text-dim); }
+  .pill.final { color: var(--good); background: var(--good-bg); border-color: var(--good-border); }
+  .info-line { font-size: 0.82rem; color: var(--text-dim); margin-bottom: 1rem; }
+  .info-line .mono { color: var(--accent-strong); }
+
+  .video-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+  figure { margin: 0; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; background: #000; }
+  video { display: block; width: 100%; height: auto; background: #000; }
+  figcaption { font-size: 0.76rem; color: var(--text-dim); background: var(--panel); padding: 0.5rem 0.75rem; border-top: 1px solid var(--border); }
+
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1px;
+    background: var(--border); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .stat { background: var(--panel); padding: 0.9rem 1rem; }
+  .stat .label { font-size: 0.65rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-faint); margin-bottom: 0.35rem; }
+  .stat .value { font-family: ui-monospace, monospace; font-size: 1.15rem; }
+
+  .empty { color: var(--text-faint); padding: 3rem 1rem; text-align: center; border: 1px dashed var(--border); border-radius: 8px; }
+  footer { color: var(--text-faint); font-size: 0.75rem; padding-top: 1.5rem; margin-top: 2rem; border-top: 1px solid var(--border); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <p class="eyebrow">simulation / training</p>
+      <h1>Training Runs</h1>
+    </div>
+    <div id="pollStatus">loading…</div>
+  </header>
+
+  <div class="tabs">
+    <button class="tab-btn active" data-tab="current" type="button">Current Run</button>
+    <button class="tab-btn" data-tab="all" type="button">All Runs</button>
+  </div>
+
+  <section id="panel-current" class="tab-panel active">
+    <div class="info-line" id="currentInfo">Waiting for a run…</div>
+    <div id="currentEmpty" class="empty">No training runs found on this machine yet.</div>
+    <div id="currentBody" hidden>
+      <div class="video-grid" id="currentVideos"></div>
+      <div class="stats" id="currentStats"></div>
+    </div>
+  </section>
+
+  <section id="panel-all" class="tab-panel">
+    <div class="controls">
+      <label class="mono" style="font-size:0.78rem;color:var(--text-faint);">task</label>
+      <select id="taskSelect"></select>
+      <label class="mono" style="font-size:0.78rem;color:var(--text-faint);">model / version</label>
+      <select id="versionSelect"></select>
+      <span class="pill" id="allFinalPill" hidden>final</span>
+    </div>
+    <div id="allEmpty" class="empty">No training runs found on this machine yet.</div>
+    <div id="allBody" hidden>
+      <div class="video-grid" id="allVideos"></div>
+      <div class="stats" id="allStats"></div>
+    </div>
+  </section>
+
+  <footer>
+    auto-discovers <code>training/runs/*/manifest.json</code> (task "bin_picking") and
+    <code>training/&lt;task&gt;/runs/*/manifest.json</code> (any other task) · polled every 5s ·
+    serve with <code>python serve_runs.py</code>
+  </footer>
+</main>
+
+<script>
+(function () {
+  var METRIC_LABELS = {
+    mean_reward: "Mean eval reward",
+    mean_episode_length: "Mean episode length",
+    success_rate: "Success rate",
+    contact_rate: "Contact rate",
+    grasp_rate: "Grasp rate",
+    pick_success_rate: "Pick success rate",
+    place_success_rate: "Place success rate",
+    n_episodes: "Eval episodes",
+  };
+  var SKIP_KEYS = { step: 1, checkpoint: 1, video: 1, is_final: 1, timestamp: 1 };
+
+  function fmtMetric(key, value) {
+    if (typeof value !== "number") return String(value);
+    if (key.endsWith("_rate")) return (value * 100).toFixed(0) + "%";
+    if (Number.isInteger(value)) return String(value);
+    return value.toFixed(2);
+  }
+  function labelFor(key) {
+    if (METRIC_LABELS[key]) return METRIC_LABELS[key];
+    return key.replace(/_/g, " ").replace(/\b\w/g, function (c) { return c.toUpperCase(); });
+  }
+
+  // Normalizes either known manifest checkpoint shape into {step, final, videos, metrics}.
+  // Add a new branch here (not a page redesign) when a new task's manifest shape shows up.
+  function normalizeCheckpoint(entry) {
+    if (entry.metrics) {
+      // bin-picking shape: nested "metrics", two videos
+      return {
+        step: entry.step,
+        final: !!entry.final,
+        videos: [
+          { label: "external view", rel: entry.video_ext },
+          { label: "head_camera POV", rel: entry.video_pov },
+        ],
+        metrics: entry.metrics,
+      };
+    }
+    // pick-place shape: flat metrics, one video
+    var metrics = {};
+    Object.keys(entry).forEach(function (k) { if (!SKIP_KEYS[k]) metrics[k] = entry[k]; });
+    return {
+      step: entry.step,
+      final: !!entry.is_final,
+      videos: [{ label: "external view", rel: entry.video }],
+      metrics: metrics,
+    };
+  }
+
+  function videoUrl(task, runName, rel) {
+    return "/runs/" + encodeURIComponent(task) + "/" + encodeURIComponent(runName) + "/" + rel;
+  }
+
+  function renderVideos(container, task, runName, videos, cacheKey) {
+    container.innerHTML = "";
+    videos.forEach(function (v) {
+      if (!v.rel) return;
+      var fig = document.createElement("figure");
+      var video = document.createElement("video");
+      video.controls = true;
+      video.muted = true;
+      video.loop = true;
+      video.playsInline = true;
+      video.autoplay = true;
+      video.src = videoUrl(task, runName, v.rel) + "?v=" + encodeURIComponent(cacheKey);
+      var cap = document.createElement("figcaption");
+      cap.textContent = v.label;
+      fig.appendChild(video);
+      fig.appendChild(cap);
+      container.appendChild(fig);
+    });
+  }
+
+  function renderStats(container, metrics) {
+    container.innerHTML = "";
+    Object.keys(metrics).forEach(function (key) {
+      var stat = document.createElement("div");
+      stat.className = "stat";
+      var label = document.createElement("div");
+      label.className = "label";
+      label.textContent = labelFor(key);
+      var value = document.createElement("div");
+      value.className = "value";
+      value.textContent = fmtMetric(key, metrics[key]);
+      stat.appendChild(label);
+      stat.appendChild(value);
+      container.appendChild(stat);
+    });
+  }
+
+  function fetchJson(url) {
+    return fetch(url + (url.indexOf("?") === -1 ? "?" : "&") + "t=" + Date.now(), { cache: "no-store" })
+      .then(function (r) { return r.json(); });
+  }
+
+  function timeAgo(iso) {
+    if (!iso) return "unknown";
+    var sec = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+    if (sec < 90) return Math.round(sec) + "s ago";
+    if (sec < 3600) return Math.round(sec / 60) + "m ago";
+    return Math.round(sec / 3600) + "h ago";
+  }
+
+  // ---- Tab switching ----
+  document.querySelectorAll(".tab-btn").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      document.querySelectorAll(".tab-btn").forEach(function (b) { b.classList.remove("active"); });
+      document.querySelectorAll(".tab-panel").forEach(function (p) { p.classList.remove("active"); });
+      btn.classList.add("active");
+      document.getElementById("panel-" + btn.dataset.tab).classList.add("active");
+    });
+  });
+
+  // ---- Current Run tab ----
+  var currentKey = null;
+  function renderCurrent(runs) {
+    var empty = document.getElementById("currentEmpty");
+    var body = document.getElementById("currentBody");
+    var info = document.getElementById("currentInfo");
+    if (!runs.length) {
+      empty.hidden = false;
+      body.hidden = true;
+      info.textContent = "Waiting for a run…";
+      return;
+    }
+    var latest = runs[0]; // server sorts by "updated" desc
+    info.innerHTML = "task <span class=\"mono\">" + latest.task + "</span> · run <span class=\"mono\">" +
+      latest.run_name + "</span> · updated " + timeAgo(latest.updated) +
+      (latest.total_timesteps ? " · step " + latest.latest_step.toLocaleString() + " / " + latest.total_timesteps.toLocaleString() : "");
+
+    fetchJson(latest.manifest_url).then(function (manifest) {
+      var checkpoints = (manifest.checkpoints || []).slice().sort(function (a, b) { return a.step - b.step; });
+      if (!checkpoints.length) { empty.hidden = false; body.hidden = true; return; }
+      var last = checkpoints[checkpoints.length - 1];
+      var key = latest.task + "/" + latest.run_name + "/" + last.step;
+      empty.hidden = true;
+      body.hidden = false;
+      if (key === currentKey) return; // no real change -- don't restart video playback
+      currentKey = key;
+      var norm = normalizeCheckpoint(last);
+      renderVideos(document.getElementById("currentVideos"), latest.task, latest.run_name, norm.videos, key);
+      renderStats(document.getElementById("currentStats"), norm.metrics);
+    });
+  }
+
+  // ---- All Runs tab ----
+  var allRunsByTask = {};
+  var versionCache = {}; // "task/run" -> manifest checkpoints, refreshed each poll
+  var selectedVersionKey = null;
+
+  function populateTaskSelect(tasks) {
+    var sel = document.getElementById("taskSelect");
+    var prev = sel.value;
+    var tasksSorted = tasks.slice().sort();
+    var current = tasksSorted.join(",");
+    if (sel.dataset.built === current) return; // options unchanged, keep selection/scroll
+    sel.dataset.built = current;
+    sel.innerHTML = "";
+    tasksSorted.forEach(function (t) {
+      var opt = document.createElement("option");
+      opt.value = t;
+      opt.textContent = t;
+      sel.appendChild(opt);
+    });
+    if (tasksSorted.indexOf(prev) !== -1) sel.value = prev;
+  }
+
+  function refreshVersionsForTask(task) {
+    var runsForTask = allRunsByTask[task] || [];
+    return Promise.all(runsForTask.map(function (r) {
+      return fetchJson(r.manifest_url).then(function (manifest) {
+        return (manifest.checkpoints || []).map(function (entry) {
+          return { run: r, entry: entry };
+        });
+      }).catch(function () { return []; });
+    })).then(function (perRun) {
+      var flat = [].concat.apply([], perRun);
+      flat.sort(function (a, b) {
+        if (a.run.run_name !== b.run.run_name) return a.run.updated < b.run.updated ? 1 : -1;
+        return b.entry.step - a.entry.step;
+      });
+      return flat;
+    });
+  }
+
+  function populateVersionSelect(items) {
+    var sel = document.getElementById("versionSelect");
+    var prev = sel.value;
+    sel.innerHTML = "";
+    items.forEach(function (item) {
+      var opt = document.createElement("option");
+      var norm = normalizeCheckpoint(item.entry);
+      var key = item.run.task + "/" + item.run.run_name + "/" + item.entry.step;
+      opt.value = key;
+      opt.textContent = item.run.run_name + " — step " + item.entry.step.toLocaleString() + (norm.final ? " (final)" : "");
+      sel.appendChild(opt);
+    });
+    var keys = items.map(function (item) { return item.run.task + "/" + item.run.run_name + "/" + item.entry.step; });
+    if (keys.indexOf(prev) !== -1) {
+      sel.value = prev;
+    } else if (items.length) {
+      sel.value = keys[0]; // newest, since populateVersionSelect receives pre-sorted items
+    }
+    return sel.value;
+  }
+
+  function renderAllRunsSelection(items) {
+    var sel = document.getElementById("versionSelect");
+    var chosen = items.filter(function (item) {
+      return (item.run.task + "/" + item.run.run_name + "/" + item.entry.step) === sel.value;
+    })[0];
+    var empty = document.getElementById("allEmpty");
+    var body = document.getElementById("allBody");
+    if (!chosen) { empty.hidden = false; body.hidden = true; return; }
+    empty.hidden = true;
+    body.hidden = false;
+    var norm = normalizeCheckpoint(chosen.entry);
+    document.getElementById("allFinalPill").hidden = !norm.final;
+    var key = sel.value;
+    if (key === selectedVersionKey) return; // unchanged -- don't restart video playback
+    selectedVersionKey = key;
+    renderVideos(document.getElementById("allVideos"), chosen.run.task, chosen.run.run_name, norm.videos, key);
+    renderStats(document.getElementById("allStats"), norm.metrics);
+  }
+
+  function refreshAllRunsTab() {
+    var taskSel = document.getElementById("taskSelect");
+    var task = taskSel.value;
+    if (!task) {
+      document.getElementById("allEmpty").hidden = false;
+      document.getElementById("allBody").hidden = true;
+      return;
+    }
+    refreshVersionsForTask(task).then(function (items) {
+      versionCache[task] = items;
+      populateVersionSelect(items);
+      renderAllRunsSelection(items);
+    });
+  }
+
+  document.getElementById("taskSelect").addEventListener("change", function () {
+    selectedVersionKey = null; // force a re-render even if the new task's top pick shares a step number
+    refreshAllRunsTab();
+  });
+  document.getElementById("versionSelect").addEventListener("change", function () {
+    var task = document.getElementById("taskSelect").value;
+    renderAllRunsSelection(versionCache[task] || []);
+  });
+
+  // ---- Poll loop ----
+  function poll() {
+    fetchJson("/index.json").then(function (data) {
+      var runs = data.runs || [];
+      document.getElementById("pollStatus").textContent =
+        runs.length ? runs.length + " run" + (runs.length === 1 ? "" : "s") + " found · polling every 5s" : "no runs found yet";
+
+      renderCurrent(runs);
+
+      allRunsByTask = {};
+      runs.forEach(function (r) {
+        (allRunsByTask[r.task] = allRunsByTask[r.task] || []).push(r);
+      });
+      populateTaskSelect(Object.keys(allRunsByTask));
+      refreshAllRunsTab();
+    }).catch(function () {
+      document.getElementById("pollStatus").textContent = "server unreachable";
+    });
+  }
+
+  poll();
+  setInterval(poll, 5000);
+})();
+</script>
+</body>
+</html>

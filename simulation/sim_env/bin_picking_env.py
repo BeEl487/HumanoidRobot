@@ -233,7 +233,10 @@ class BinPickingEnv(gym.Env):
 
         terminated = False
         truncated = False
-        info: dict = {}
+        # Episode-level milestone flags, exposed so external code (evaluate.py, training
+        # callbacks) can read contact/grasp outcomes via the public info dict instead of reaching
+        # into _contact_state() directly.
+        info: dict = {"touched": self._has_touched_this_episode, "grasped": self._has_grasped_this_episode}
 
         if is_grasped and height_above_floor > self.cfg["success"]["lift_height_m"]:
             self._grasp_hold_count += 1

@@ -25,7 +25,14 @@
   <link name="torso_link">
     <collision name="torso_collision">
       <geometry>
-        <box size="0.18 0.12 0.30"/>
+        <!-- v11: shrunk from 0.18 x 0.12 (x-depth x y-width). At the old size, reaching the
+        curriculum target required the upper arm to penetrate 3.6cm into this box, confirmed via
+        MuJoCo contact check rather than ikpy IK, which has no notion of torso geometry at all and
+        was reporting 100% "reachable" through solutions that don't clear it. At this size, the
+        full 36-point reachability_check.py grid is both IK-solvable and collision-free by at
+        least one arm, with margin (0.10 x 0.08 is the bare-minimum clearing size). See
+        docs/ASSUMPTIONS.md "Torso" section for the mass/volume follow-up this implies. -->
+        <box size="0.09 0.07 0.30"/>
       </geometry>
     </collision>
   </link>

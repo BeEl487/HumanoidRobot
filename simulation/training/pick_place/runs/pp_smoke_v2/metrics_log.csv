@@ -1,0 +1,1 @@
+global_step,episode_num,episode_reward,episode_length,success_rate,avg_reward_100,policy_loss,value_loss,entropy,learning_rate,fps,eta_seconds,ee_x,ee_y,ee_z,cube_x,cube_y,cube_z,ee_to_cube_dist,cube_to_goal_dist,is_grasped,timestamp

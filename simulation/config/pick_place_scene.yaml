@@ -1,0 +1,61 @@
+# Table + two open boxes (source "left", destination "right") for the suction pick-and-place
+# task. Independent of config/scene.yaml (the bin-picking task's single-bin scene) -- this task
+# gets its own furniture layout so bin-picking is untouched. Units: SI (meters, kg).
+#
+# Both box centers verified reachable by a SINGLE arm (right) via ikpy against humanoid.urdf
+# before being committed here (same method as scripts/reachability_check.py) -- see
+# simulation/docs/ASSUMPTIONS.md "Suction pick-place" entry. That's what lets this task use one
+# arm for the whole pick-then-place motion instead of a two-arm handoff.
+
+table:
+  center_xy: [0.205, 0.0]
+  top_height: 0.75
+  # Depth (Y) widened to cover the boxes' new Y span (source up to +0.14, destination down to
+  # -0.38, see boxes.source/destination below) plus a small overhang margin. Width (X) unchanged.
+  top_size_xy: [0.36, 0.60]
+  top_thickness: 0.03
+  pedestal_size_xy: [0.16, 0.16]
+
+boxes:
+  # Both centers share the same X (depth from robot) and floor Z; only Y (left/right across the
+  # table) differs.
+  # wall_thickness: was 0.004 -- at physics_hz=500 (0.002s/substep), MuJoCo's discrete collision
+  # detection can miss a contact entirely (tunneling) whenever relative velocity exceeds roughly
+  # wall_thickness/timestep = 0.004/0.002 = 2 m/s within a single substep. Watching pp_v6's
+  # rollout: the cube was pushed hard enough to pass clean through a box wall instead of bouncing
+  # off it -- a real MuJoCo discrete-collision artifact, not an RL/reward problem, so fixed at the
+  # geometry level. Raised to 0.01 (2.5x), pushing the tunneling threshold to ~5 m/s, comfortably
+  # above what the arm can actually impart at its velocity-capped (max_arm_joint_velocity_rad_s),
+  # trajectory-shaped control.
+  wall_thickness: 0.01
+  # Y (side-to-side, the axis separating the two boxes) tripled 0.08 -> 0.24 per user request; X
+  # (depth) and Z (height) unchanged.
+  inner_size: [0.08, 0.24, 0.035] # full inner width(X) x depth(Y) x height
+  source: # "left box" -- the cube always spawns here on reset
+    # Y=0.02 (not the naive 0.06 carried over from the old, smaller box): with the box now 0.24m
+    # deep in Y, centering it at the old position would push its far edge to Y=+0.18, right at the
+    # right arm's reach limit, and some corners past it. Verified via ikpy (same method
+    # scripts/reachability_check.py uses for the bin-picking task) that the right arm's reach
+    # envelope at this X/Z tops out around Y=+0.18-0.19 (adduction-limited, reaching toward/past
+    # the body's centerline) and fails from Y=+0.20 on -- see scripts/check_pickplace_reach.py.
+    # Y=0.02 keeps the box's far edge at +0.14, comfortably inside the verified-reachable region
+    # at every X the box spans (all 4 corners individually re-verified).
+    center_xy: [0.16, 0.02]
+  destination: # "right box" -- episode succeeds when the cube comes to rest in here
+    # The destination direction (more negative Y, abduction/away from body) has much more reach
+    # headroom (verified reachable out to at least Y=-0.38) -- so the destination box, not the
+    # source box, is the one moved further out to make room for both larger boxes without overlap.
+    # Gap between the two boxes' facing walls at these centers: 0.04m.
+    center_xy: [0.16, -0.26]
+
+cube:
+  half_size_m: 0.013 # matches config/scene.yaml's objects.half_size_range_m midpoint
+  mass_g: 30
+  spawn_margin_m: 0.015 # keep-out margin from the source box's inner walls when sampling spawn XY
+  drop_height_range_m: [0.02, 0.05]
+  friction_jitter_pct: 20
+  mass_jitter_pct: 15
+
+lighting:
+  key_light_pos_jitter_m: 0.5
+  ambient_range: [0.2, 0.5]

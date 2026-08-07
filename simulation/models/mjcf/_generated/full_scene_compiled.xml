@@ -37,7 +37,7 @@
       <frame name="robot_mount">
         <body name="base_link">
           <body name="torso_link">
-            <geom name="torso_collision" size="0.09 0.06 0.15" type="box" density="550"/>
+            <geom name="torso_collision" size="0.045 0.035 0.15" type="box" density="550"/>
             <camera name="head_camera" pos="0.07 0 0.15" quat="0.67438 0.212631 -0.212631 -0.67438" resolution="640 480" fovy="73.7398"/>
             <body name="left_shoulder_link" pos="0 0.11 0.05">
               <joint name="left_shoulder_pitch_joint" pos="0 0 0" axis="0 1 0" range="-2.0944 2.7053" actuatorfrcrange="-3 3"/>

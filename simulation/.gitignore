@@ -3,3 +3,4 @@ __pycache__/
 *.pyc
 training/logs/
 training/checkpoints/
+training/runs/

@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Training Progress Dashboard</title>
+<style>
+  :root {
+    --bg: #0b0f14; --panel: #12181f; --panel-2: #171f28; --border: #263140; --border-strong: #37475a;
+    --text: #dfe6ee; --text-dim: #8b9baf; --text-faint: #566577;
+    --accent: #4fa8e0; --accent-strong: #7cc4f2; --accent-bg: #16283a;
+    --good: #46b57d; --good-bg: #12271c; --good-border: #245038;
+    --bad: #e0684f; --bad-bg: #2c1712;
+    --warn: #d9a441; --warn-bg: #2c220f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg); color: var(--text); margin: 0; padding: 2rem 1.25rem 4rem;
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif; line-height: 1.5;
+  }
+  code, .mono { font-family: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace; }
+  main { max-width: 900px; margin: 0 auto; }
+  header { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem;
+    padding-bottom: 1rem; margin-bottom: 1.25rem; border-bottom: 1px solid var(--border); }
+  .eyebrow { font-size: 0.72rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-faint); margin: 0 0 0.4rem; }
+  h1 { font-size: 1.4rem; font-weight: 700; margin: 0; }
+  #statusLine { font-size: 0.74rem; color: var(--text-faint); text-align: right; white-space: nowrap; }
+  #statusLine .live { color: var(--good); }
+  #statusLine .stale { color: var(--warn); }
+
+  .progress-track { height: 6px; background: var(--panel-2); border-radius: 4px; overflow: hidden; margin: 0.5rem 0 1.5rem; }
+  .progress-fill { height: 100%; background: var(--accent); border-radius: 4px 0 0 4px; transition: width 0.3s; }
+
+  .controls { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 1.25rem; }
+  select {
+    font-family: inherit; font-size: 0.88rem; background: var(--panel); color: var(--text);
+    border: 1px solid var(--border-strong); border-radius: 6px; padding: 0.45rem 0.7rem;
+  }
+  button {
+    font-family: inherit; font-size: 0.8rem; background: var(--panel-2); color: var(--text-dim);
+    border: 1px solid var(--border); border-radius: 6px; padding: 0.4rem 0.75rem; cursor: pointer;
+  }
+  button:hover { color: var(--text); border-color: var(--border-strong); }
+  button.active { color: var(--accent-strong); border-color: var(--accent); background: var(--accent-bg); }
+  .pill { font-size: 0.7rem; padding: 0.2rem 0.55rem; border-radius: 99px; border: 1px solid var(--border);
+    background: var(--panel-2); color: var(--text-dim); }
+  .pill.final { color: var(--good); background: var(--good-bg); border-color: var(--good-border); }
+
+  .video-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+  figure { margin: 0; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; background: #000; }
+  video { display: block; width: 100%; height: auto; background: #000; }
+  figcaption { font-size: 0.76rem; color: var(--text-dim); background: var(--panel); padding: 0.5rem 0.75rem; border-top: 1px solid var(--border); }
+
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1px;
+    background: var(--border); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .stat { background: var(--panel); padding: 0.9rem 1rem; }
+  .stat .label { font-size: 0.65rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-faint); margin-bottom: 0.35rem; }
+  .stat .value { font-family: ui-monospace, monospace; font-size: 1.15rem; }
+
+  #empty { color: var(--text-faint); padding: 3rem 1rem; text-align: center; border: 1px dashed var(--border); border-radius: 8px; }
+  footer { color: var(--text-faint); font-size: 0.75rem; padding-top: 1.5rem; margin-top: 2rem; border-top: 1px solid var(--border); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <p class="eyebrow" id="runLabel">training run</p>
+      <h1 id="title">Training Progress Dashboard</h1>
+    </div>
+    <div id="statusLine">loading…</div>
+  </header>
+
+  <div class="progress-track"><div class="progress-fill" id="progressFill" style="width:0%"></div></div>
+
+  <div id="content" hidden>
+    <div class="controls">
+      <select id="ckptSelect"></select>
+      <button id="followBtn" title="Jump to the latest checkpoint as new ones land">Follow latest</button>
+      <span class="pill" id="finalPill" hidden>final checkpoint</span>
+    </div>
+
+    <div class="video-grid">
+      <figure>
+        <video id="playerExt" controls autoplay loop muted playsinline></video>
+        <figcaption>external view</figcaption>
+      </figure>
+      <figure>
+        <video id="playerPov" controls loop muted playsinline></video>
+        <figcaption>head_camera POV</figcaption>
+      </figure>
+    </div>
+
+    <div class="stats" id="statsGrid"></div>
+  </div>
+
+  <div id="empty">Waiting for the first checkpoint… this page updates itself, no need to reload.</div>
+
+  <footer>
+    manifest: <code>manifest.json</code> · polled every 5s · serve this directory with any static
+    file server (e.g. <code>python serve_dashboard.py &lt;run_dir&gt;</code>) and open this file
+  </footer>
+</main>
+
+<script>
+(function () {
+  var METRIC_LABELS = {
+    mean_reward: "Mean eval reward",
+    mean_episode_length: "Mean episode length",
+    success_rate: "Success rate",
+    contact_rate: "Contact rate",
+    grasp_rate: "Grasp rate",
+    n_episodes: "Eval episodes",
+  };
+
+  var followLatest = true;
+  var lastManifestText = null;
+  var manifest = null;
+
+  var els = {
+    runLabel: document.getElementById("runLabel"),
+    title: document.getElementById("title"),
+    statusLine: document.getElementById("statusLine"),
+    progressFill: document.getElementById("progressFill"),
+    content: document.getElementById("content"),
+    empty: document.getElementById("empty"),
+    select: document.getElementById("ckptSelect"),
+    followBtn: document.getElementById("followBtn"),
+    finalPill: document.getElementById("finalPill"),
+    playerExt: document.getElementById("playerExt"),
+    playerPov: document.getElementById("playerPov"),
+    statsGrid: document.getElementById("statsGrid"),
+  };
+
+  function fmtMetric(key, value) {
+    if (typeof value !== "number") return String(value);
+    if (key.endsWith("_rate")) return (value * 100).toFixed(0) + "%";
+    if (Number.isInteger(value)) return String(value);
+    return value.toFixed(2);
+  }
+
+  function labelFor(key) {
+    if (METRIC_LABELS[key]) return METRIC_LABELS[key];
+    return key.replace(/_/g, " ").replace(/\b\w/g, function (c) { return c.toUpperCase(); });
+  }
+
+  function renderStats(metrics) {
+    els.statsGrid.innerHTML = "";
+    Object.keys(metrics).forEach(function (key) {
+      var stat = document.createElement("div");
+      stat.className = "stat";
+      var label = document.createElement("div");
+      label.className = "label";
+      label.textContent = labelFor(key);
+      var value = document.createElement("div");
+      value.className = "value";
+      value.textContent = fmtMetric(key, metrics[key]);
+      stat.appendChild(label);
+      stat.appendChild(value);
+      els.statsGrid.appendChild(stat);
+    });
+  }
+
+  function selectCheckpoint(step) {
+    var entry = manifest.checkpoints.find(function (c) { return c.step === step; });
+    if (!entry) return;
+    els.select.value = String(step);
+    var cacheBust = "?t=" + Date.now();
+    els.playerExt.src = entry.video_ext + cacheBust;
+    els.playerPov.src = entry.video_pov + cacheBust;
+    els.finalPill.hidden = !entry.final;
+    renderStats(entry.metrics);
+  }
+
+  function setFollow(on) {
+    followLatest = on;
+    els.followBtn.classList.toggle("active", on);
+  }
+
+  function render() {
+    if (!manifest || !manifest.checkpoints || manifest.checkpoints.length === 0) {
+      els.empty.hidden = false;
+      els.content.hidden = true;
+      return;
+    }
+    els.empty.hidden = true;
+    els.content.hidden = false;
+
+    els.runLabel.textContent = (manifest.run_name || "training run") + " · " + (manifest.profile || "");
+    els.title.textContent = "Training Progress — " + (manifest.run_name || "");
+
+    var checkpoints = manifest.checkpoints.slice().sort(function (a, b) { return a.step - b.step; });
+    var latest = checkpoints[checkpoints.length - 1];
+    var pct = manifest.total_timesteps ? Math.min(100, (latest.step / manifest.total_timesteps) * 100) : 100;
+    els.progressFill.style.width = pct.toFixed(1) + "%";
+
+    var prevValue = els.select.value;
+    els.select.innerHTML = "";
+    checkpoints.forEach(function (c) {
+      var opt = document.createElement("option");
+      opt.value = String(c.step);
+      opt.textContent = "step " + c.step.toLocaleString() + (c.final ? " (final)" : "");
+      els.select.appendChild(opt);
+    });
+
+    var targetStep = followLatest ? latest.step : (prevValue ? Number(prevValue) : latest.step);
+    if (!checkpoints.some(function (c) { return c.step === targetStep; })) targetStep = latest.step;
+    selectCheckpoint(targetStep);
+
+    var updated = manifest.updated ? new Date(manifest.updated) : null;
+    var ageSec = updated ? (Date.now() - updated.getTime()) / 1000 : null;
+    var stale = ageSec !== null && ageSec > 60 && pct < 100;
+    els.statusLine.innerHTML =
+      '<span class="' + (pct >= 100 ? "live" : (stale ? "stale" : "live")) + '">' +
+      (pct >= 100 ? "training complete" : "training — step " + latest.step.toLocaleString() + " / " + (manifest.total_timesteps || "?").toLocaleString()) +
+      "</span><br>updated " + (updated ? updated.toLocaleTimeString() : "—");
+  }
+
+  els.select.addEventListener("change", function () {
+    var step = Number(els.select.value);
+    var latest = manifest.checkpoints[manifest.checkpoints.length - 1];
+    setFollow(step === latest.step);
+    selectCheckpoint(step);
+  });
+  els.followBtn.addEventListener("click", function () {
+    setFollow(true);
+    if (manifest && manifest.checkpoints.length) {
+      var latest = manifest.checkpoints[manifest.checkpoints.length - 1];
+      selectCheckpoint(latest.step);
+    }
+  });
+
+  function poll() {
+    fetch("manifest.json?t=" + Date.now(), { cache: "no-store" })
+      .then(function (r) { return r.text(); })
+      .then(function (text) {
+        if (text === lastManifestText) return; // nothing changed, don't reset video playback
+        lastManifestText = text;
+        manifest = JSON.parse(text);
+        render();
+      })
+      .catch(function () {
+        els.statusLine.innerHTML = '<span class="stale">manifest unreachable — is this served over http(s)?</span>';
+      });
+  }
+
+  setFollow(true);
+  poll();
+  setInterval(poll, 5000);
+})();
+</script>
+</body>
+</html>

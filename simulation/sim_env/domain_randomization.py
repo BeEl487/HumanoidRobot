@@ -107,6 +107,65 @@ def randomize_object_friction(model: mujoco.MjModel, rng: np.random.Generator) -
         model.geom_friction[geom_id, 0] = nominal * (1.0 + rng.uniform(-pct, pct))
 
 
+PICK_PLACE_SCENE_CONFIG_PATH = pathlib.Path(__file__).resolve().parent.parent / "config" / "pick_place_scene.yaml"
+
+
+def _load_pick_place_scene_config() -> dict:
+    with open(PICK_PLACE_SCENE_CONFIG_PATH, encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
+def randomize_cube_in_box(
+    model: mujoco.MjModel, data: mujoco.MjData, rng: np.random.Generator,
+    box_center_xy: tuple[float, float], box_floor_top_z: float,
+) -> None:
+    """Randomize object_0's pose within the source box's footprint (minus spawn_margin_m keep-out
+    from the walls) -- the suction pick-place task's equivalent of randomize_objects, but for a
+    single fixed cube in a single fixed box rather than a multi-slot roster, so it's a much
+    smaller function than randomize_objects and doesn't need slot parking."""
+    cfg = _load_pick_place_scene_config()
+    b, c = cfg["boxes"], cfg["cube"]
+    iw, idepth, _ = b["inner_size"]
+    margin = c["spawn_margin_m"]
+    half_w = max(iw / 2 - margin, 0.005)
+    half_d = max(idepth / 2 - margin, 0.005)
+
+    cx, cy = box_center_xy
+    x = cx + rng.uniform(-half_w, half_w)
+    y = cy + rng.uniform(-half_d, half_d)
+    z = box_floor_top_z + c["half_size_m"] + rng.uniform(*c["drop_height_range_m"])
+    yaw = rng.uniform(-np.pi, np.pi)
+
+    qposadr = model.joint("object_0_freejoint").qposadr[0]
+    dofadr = model.joint("object_0_freejoint").dofadr[0]
+    data.qpos[qposadr:qposadr + 3] = [x, y, z]
+    data.qpos[qposadr + 3:qposadr + 7] = [np.cos(yaw / 2), 0, 0, np.sin(yaw / 2)]
+    data.qvel[dofadr:dofadr + 6] = 0.0
+
+
+def randomize_cube_physics(model: mujoco.MjModel, rng: np.random.Generator) -> None:
+    """+/- friction_jitter_pct / mass_jitter_pct around object_0's nominal friction/mass, read from
+    the fixed config baseline (not the geom's current value) for the same reason
+    randomize_object_friction does -- avoids compounding drift across repeated calls."""
+    cfg = _load_pick_place_scene_config()
+    c = cfg["cube"]
+    geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "object_0_collision")
+    body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "object_0")
+
+    import build_model  # local import: avoids sim_env/ depending on scripts/ at module load time
+    nominal_friction = build_model.OBJECT_FRICTION[0]
+    friction_pct = c["friction_jitter_pct"] / 100.0
+    model.geom_friction[geom_id, 0] = nominal_friction * (1.0 + rng.uniform(-friction_pct, friction_pct))
+
+    nominal_mass = c["mass_g"] / 1000.0
+    mass_pct = c["mass_jitter_pct"] / 100.0
+    new_mass = nominal_mass * (1.0 + rng.uniform(-mass_pct, mass_pct))
+    # Scale inertia proportionally so it stays consistent with the new mass (both are diagonal for
+    # a cube's own principal axes) -- MuJoCo doesn't recompute this automatically from body_mass.
+    model.body_inertia[body_id] *= new_mass / model.body_mass[body_id]
+    model.body_mass[body_id] = new_mass
+
+
 def randomize_lighting(model: mujoco.MjModel, rng: np.random.Generator) -> None:
     """Jitter the key light's position and the scene's ambient level. Schema/plumbing defined now
     (Milestone 5, since it's just model-array mutation, no rendering dependency) but not yet

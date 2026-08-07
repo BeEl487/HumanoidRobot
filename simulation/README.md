@@ -81,9 +81,45 @@ python scripts/render_policy_rollout.py --checkpoint training/checkpoints/ppo_st
 ```
 
 `ppo_state_full.zip` was the first full 500,000-timestep run beyond Milestone 8's smoke-test
-budget. Four further iterations followed (`ppo_state_v2.zip` through `ppo_state_v4.zip`),
-chasing an actual successful grasp — none achieved one yet, but real progress and real bugs (a
-reward-hacking exploit, a camera coverage gap) were found and fixed along the way.
-**[`training/TRAINING_LOG.md`](training/TRAINING_LOG.md) is the readable summary of all five
-runs** — what changed each time, what happened, and the options on the table for what to try
+budget. Eleven iterations have followed since (`ppo_state_v2.zip` through `ppo_state_v11.zip`),
+chasing an actual successful grasp — reach is now solved (v11), grasping is the open problem.
+**[`training/TRAINING_LOG.md`](training/TRAINING_LOG.md) is the readable summary of every
+run** — what changed each time, what happened, and the options on the table for what to try
 next. `docs/ASSUMPTIONS.md`'s "Task / RL" section has the full engineering detail behind it.
+
+## Automated training dashboard
+
+`train_ppo.py` runs a self-updating progress dashboard by default (every 200,000 steps: saves a
+checkpoint, evaluates it, renders a video, updates a JSON manifest) — no need to babysit a run or
+manually re-render anything to see how it's doing partway through:
+
+```
+python training/train_ppo.py --profile state --timesteps 500000 --run-name v12
+# in another terminal, once it's running:
+python training/serve_dashboard.py training/runs/v12
+# open http://localhost:8000/dashboard.html -- pick any checkpoint from the dropdown,
+# it keeps polling and jumps to new checkpoints as they land
+```
+
+`--artifact-interval` changes the cadence (0 disables it), `--artifact-episodes` changes how many
+eval episodes each update runs. See `training/progress_artifacts.py`'s module docstring for the
+directory layout and design notes.
+
+### Viewing every run on this machine, any task, any time
+
+`training/runs_browser.html` + `training/serve_runs.py` is a second, unified dashboard that
+browses **every run this machine has ever produced**, across every task, whether or not anything
+is training right now -- it just reads whatever `manifest.json`/video files each task's own
+training pipeline has already written (currently bin-picking's `training/runs/` and the suction
+pick-place task's `training/pick_place/runs/`; a future task's `training/<new_task>/runs/`
+appears automatically, no code change needed):
+
+```
+python training/serve_runs.py
+# open http://localhost:8000/
+```
+
+Two tabs: **Current Run** shows whichever run was most recently updated (i.e. is actively
+training, if anything is), no selection needed. **All Runs** has a task-type dropdown and a
+model/version dropdown listing every checkpoint of every run under that task, newest first --
+picking one loads its video(s) and stats. Both tabs poll every 5s.

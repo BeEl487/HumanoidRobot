@@ -26,9 +26,10 @@ no URDF, CAD, mesh, or measurement doc exists anywhere in this repo outside ARCH
 
 | Parameter | Value | Rationale | Confirm before real hardware? |
 |---|---|---|---|
-| Torso box dimensions | 0.18 × 0.12 × 0.30 m (W×D×H) | No measured torso dimensions exist anywhere in the repo. Sized to plausibly enclose a small torso frame + 12V battery pack + Jetson + Teensy + 2 gimbal ODrives, at a scale consistent with the arm lengths chosen in Milestone 2. | Yes |
-| Torso lumped density | 550 kg/m³ | Backed out from a target mass guess (~3.6 kg for a lightweight frame + electronics + battery), not from a bill of materials or solid-aluminum assumption (aluminum at this volume would be ~17.5 kg, clearly wrong for a hollow/lightweight structure). | Yes — replace with a real lumped density once the torso assembly is weighed. |
-| Torso mass (derived) | ≈3.6 kg | 0.18×0.12×0.30 × 550 kg/m³ | Yes (follows from the two rows above) |
+| Torso box dimensions | 0.09 × 0.07 × 0.30 m (W×D×H) — was 0.18 × 0.12 × 0.30 through v10 | **v11 change, load-bearing finding:** every past reachability verification (v8's wall-clearance fix, v10's shoulder_roll widening, `reachability_check.py`'s whole gate) used ikpy IK only, which has no notion of the torso's collision geometry at all. Checked directly against actual MuJoCo contact detection (not just IK) for the first time: at the old size, reaching the curriculum target required the upper arm to penetrate **3.6cm into the torso box** — physically impossible in the real sim, meaning the "verified reachable" target v10 shipped was never actually reachable. Full-bin check redone with both IK-solvability AND zero self-collision required: old size passed only 22/36 (61%) of the bin-floor grid; this size passes 36/36, with margin (0.10 × 0.08 is the bare-minimum clearing size). **This conflicts with the row below** — flagging rather than silently dropping it. | Yes |
+| Torso box dimensions vs. electronics fit | Unresolved conflict | The old 0.18×0.12×0.30 size was explicitly sized to "plausibly enclose a small torso frame + 12V battery pack + Jetson + Teensy + 2 gimbal ODrives" (prior placeholder rationale). At 0.09×0.07×0.30, that stated packaging assumption almost certainly no longer holds — this shrink was driven entirely by sim arm-reach/self-collision, not a real packaging study. Real hardware will need either a genuinely smaller electronics package, a torso shape that isn't a simple box (freeing up reach clearance without shrinking overall volume), or shoulders mounted further forward/outward to clear a full-size torso. | Yes — this is the one to resolve before any real build, not just measure. |
+| Torso lumped density | 550 kg/m³ | Unchanged — backed out from a target mass guess, not a bill of materials (see prior note; aluminum at the old volume would be ~17.5 kg, clearly wrong for a hollow/lightweight structure). | Yes — replace with a real lumped density once the torso assembly is weighed. |
+| Torso mass (derived) | ≈1.04 kg — was ≈3.6 kg through v10 | 0.09×0.07×0.30 × 550 kg/m³. Dropped with the volume; not a real mass estimate for whatever the real torso ends up being once the electronics-fit conflict above is resolved. | Yes (follows from the two rows above) |
 | Mount height above ground | 0.90 m | Arbitrary fixed-rig height for a tabletop-reach workspace; revisited by the reachability check in Milestone 5. | No — sim-only rig parameter, not a real robot spec (the real robot has no defined mounting/base height either). |
 
 ## Arms (Milestone 2)
@@ -67,7 +68,7 @@ only, not a hardware design.** The real robot's arms currently terminate at the 
 | Parameter | Value | Rationale | Confirm before real hardware? |
 |---|---|---|---|
 | Mount body | Rigid, fixed to `torso_link` (MJCF-only — not part of the URDF) | No head/neck link exists in the architecture (torso is the topmost segment) and no camera has been chosen for the real robot at all (ARCHITECTURE.md §7). A torso-fixed camera co-moves with the gimbal-driven torso tilt the same way a head-mounted camera would track gaze via neck motion, so it's a reasonable functional stand-in. | Yes — revisit if a dedicated head/neck mechanism is ever planned. |
-| Mount offset | (+0.07, 0, +0.13) m from torso origin, pitched 30° down from horizontal | Places the camera near the top-front of the torso box (half-depth 0.06 m, half-height 0.15 m), angled toward the workspace in front of the robot rather than the horizon. | Yes |
+| Mount offset | (+0.07, 0, +0.13) m from torso origin, pitched 30° down from horizontal | Placed near the top-front of the torso box, angled toward the workspace. **Stale since v11's torso shrink** (0.18×0.12→0.09×0.07): the box's front-face half-extent is now 0.045 m, so this +0.07 m offset now sits ~2.5cm in front of the box rather than recessed within it — cosmetic (doesn't affect what the camera sees or any check script), but the offset hasn't been re-tuned to the new box size. | Yes |
 | Resolution | 640×480 default (RL training), 1280×720 debug (manual inspection, not used in training) | 640×480 is a standard small RL-image-observation resolution, fast to render at the step rates RL training needs. | No — a config choice, not a hardware claim. |
 | Horizontal FOV | 58° | Representative of a commodity Jetson/USB3-compatible global-shutter RGB module (e.g. e-CAM/See3CAM class, or a RealSense-class module's RGB stream) — no real camera has been chosen yet. | Yes |
 | FOV conversion | Horizontal FOV → MuJoCo's vertical `fovy`, computed at build time from the configured resolution's aspect ratio: `fovy = 2*atan(tan(hfov/2) / aspect)` (`scripts/build_model.py:hfov_to_fovy`) | Camera specs are conventionally quoted as horizontal FOV, but MuJoCo's `<camera fovy>` is vertical — computing this at build time (rather than hardcoding a fovy number) keeps the effective FOV correct if `resolution_default`'s aspect ratio ever changes. | No — arithmetic, not a hardware claim. |
@@ -618,5 +619,227 @@ coordination via exploration. Also reverted `reward.stuck.enabled` back to `fals
 regression) for this run, so the reachability fix is the one new variable being tested, not
 compounded with a mechanism already shown to hurt.
 
-Checkpoint: `checkpoints/ppo_state_v10.zip` (pending). See `training/TRAINING_LOG.md` for the full
-v1-v10 readable summary once complete.
+**Outcome: fix verified correct, still 0/10 contact.**
+
+| Steps | reward | contact (of 10) |
+|---|---|---|
+| 20,000 | -90.0 | 0 |
+| 100,000 | -117.7 | 0 |
+| 200,000 | -52.0 | 0 |
+| 300,000 | -51.4 | 0 |
+| 400,000 | -51.5 | 0 |
+| 500,000 (final) | -51.3 | 0 |
+
+Zero contact across all 60 evaluated episodes (10 x 6 checkpoints) -- worse than v8's consistent
+10-20%, despite the target now being genuinely reachable (verified, not assumed). A per-step
+trajectory check (correcting an arm-index bug in an earlier draft of the diagnostic script, which
+had accidentally always read arm index 0 regardless of which side the curriculum picked that
+episode) shows the policy does get close -- 4.6cm, 5.0cm, and 9.1cm minimum distance across 3
+sampled episodes, the same range v8/v9 plateaued at -- it just still doesn't cross into contact.
+
+So the fix was real, verified, and necessary (an actual kinematic impossibility was removed), but
+this run's data says reachability was not the dominant blocker after all: fine-motor precision in
+the already-close range is still the wall, same as it's looked since v8. The honest caveat stated
+before launching this run held: reachability existing doesn't guarantee the policy easily finds it.
+
+One unconfirmed hypothesis for a future iteration: widening `shoulder_roll`'s span (135° -> 170°)
+also widens what a fixed unit of policy action/exploration noise corresponds to in absolute
+degrees -- the same policy precision now maps to coarser joint control, which could make
+final-approach positioning harder without a larger training budget. Not confirmed, flagged only.
+
+Also fixed incidentally this run (found by another contributor mid-session): `training/train_ppo.py`
+wasn't wrapping the env in SB3's `Monitor`, so `rollout/ep_rew_mean` was never written to
+TensorBoard for v1-v9 -- only `train/*` loss diagnostics were visible there. Fixed; v10 onward logs
+proper reward curves to TensorBoard.
+
+Checkpoint: `checkpoints/ppo_state_v10.zip`. v8 remains the only checkpoint across all ten runs to
+ever achieve contact. See `training/TRAINING_LOG.md` for the full v1-v10 readable summary.
+
+## Suction pick-place (independent task track)
+
+A second, independent RL task alongside bin-picking -- own scene, own env class, own reward, own
+training pipeline -- per "modular so additional objects and tasks can easily be added later"
+rather than overloading `BinPickingEnv` with a second mode. Bin-picking's files (`config/env.yaml`,
+`config/scene.yaml`, `sim_env/bin_picking_env.py`, `sim_env/rewards.py`,
+`training/train_ppo.py`) are untouched by this track.
+
+**Furniture:** one table (`config/pick_place_scene.yaml`), two small open-top boxes on it --
+source ("left", where the cube always spawns) and destination ("right", the target). Built by
+`scripts/build_model.py`'s `_add_pick_place_furniture`/`_add_open_box` (factored out of the
+bin-picking task's inline bin-wall code so both tasks share the box-drawing geometry instead of
+duplicating it a third time).
+
+**Single arm, not two:** both box centers (`(0.16, 0.06)` source, `(0.16, -0.06)` destination,
+world XY) were verified reachable by the RIGHT arm ALONE via `ikpy` against `humanoid.urdf` before
+being committed -- same method `reachability_check.py` uses, run ad hoc for this check (see
+scratchpad `check_pickplace_reach.py` for the session's verification script). That means the whole
+pick-then-place motion is a single-arm task, not a two-arm handoff, which is materially simpler to
+learn. `config/pick_place_env.yaml`'s `active_arm: right` is a real constraint, not an arbitrary
+choice -- moving either box outside this verified-reachable pair would reopen the two-arm-handoff
+problem.
+
+**Suction, not finger grasping:** the gripper's finger joints are held at a fixed pose
+(`gripper_fixed_pos_frac`, not an RL action) and act as a mounting platform; the actual suction
+contact point is the gripper base's own collision geom
+(`{side}_gripper_base_collision`, already existed for the finger-grasp gripper). Attachment is a
+MuJoCo weld equality constraint between `{side}_gripper_base_link` and `object_0`
+(`scripts/build_model.py:_add_suction_weld`), compiled **inactive** and toggled per control step
+via `data.eq_active` (a plain mutable `MjData` array added in MuJoCo 3.1+ specifically for this
+kind of runtime-togglable constraint -- no model recompilation needed, so it's cheap enough to
+gate every step during RL training). At the moment of attach, `model.eq_data`'s anchor/relpose is
+overwritten with the CURRENT relative pose between gripper and cube
+(`SuctionPickPlaceEnv._attach_suction`), so the cube welds on wherever it actually is, not a pose
+baked in at compile time. Attachment requires BOTH the action commanding suction on AND real
+contact (`_is_suction_touching`, an actual MuJoCo contact pair, not just proximity) AND the EE
+within `suction.max_attach_distance_m` of the cube -- an action alone can't attach through open
+air. Verified end-to-end (contact detection at near/far offsets, weld rigidity under arm motion,
+release-then-fall) in the session's scratchpad `check_suction_mechanism.py` before any training
+compute was spent, mirroring this project's standing "verify each milestone before spending
+compute" discipline.
+
+**Reward** (`sim_env/pick_place_rewards.py`): adopts the bin-picking task's hard-won "no
+continuous farmable bonus" structural lesson (its v2 exploit history) from the start rather than
+re-discovering it — distance-to-cube shaping while unattached, one-time `attach_bonus`, continuous
+lift/carry-toward-destination shaping while attached (both tied to genuine cube pose, can't be
+faked without a real attach), one-time `place_bonus` on success, plus small continuous penalties
+for wasted motion (`||action - prev_action||`), arm-vs-furniture collision, and a one-time penalty
+for releasing suction while the cube is outside the destination box footprint ("dropping").
+
+**Success/failure:** success = cube at rest (linear speed below `success.max_speed_m_s`) inside the
+destination box footprint, released (not attached), sustained for `success.hold_steps` consecutive
+control steps. Failure = cube center falls below `table_top - failure.table_edge_margin_m`, or
+episode timeout (`episode_max_steps: 300`, longer than bin-picking's 200 -- pick-then-place is a
+strictly longer task).
+
+**Domain randomization** (`sim_env/domain_randomization.py`): `randomize_cube_in_box` (pose within
+the source box, minus wall keep-out margin) and `randomize_cube_physics` (+/- friction and mass
+jitter around the nominal cube; mass jitter also scales `body_inertia` proportionally so the two
+stay physically consistent, since MuJoCo doesn't recompute inertia from `body_mass` automatically).
+
+**pp_v1 -> pp_v2 fix (claw removal + larger boxes):** pp_v1 plateaued at 0% pick success with the
+policy's action std collapsing fast, and the user caught the real cause by watching the rendered
+rollout: the finger-grasp gripper's collision geoms (leftover from the bin-picking task's end
+effector -- prong-shaped boxes sticking ~5cm past the gripper base, still physically present and
+colliding even though this task never actuates them) could snag on the box walls, invisibly to
+both the reward and `_is_arm_collision` (which only checks `upper_arm`/`forearm`). Fixed via
+`scripts/build_model.py:_neutralize_gripper_fingers`, called only from the
+`task=="suction_pick_place"` branch of `build_spec`: shrinks both sides' finger collision geoms to
+near-zero, sets `contype=conaffinity=0` (fully excluded from collision resolution), and zeroes
+their `rgba` alpha (no longer rendered). Bin-picking's `build_spec` path never calls this, so its
+finger-grasp gripper is untouched. Verified: compiled model shows the expected near-zero
+size/zero-contype for all 4 finger geoms; a rollout that deliberately drives the arm into a box
+wall recorded 0 finger-vs-furniture contacts over 150 steps (previously uncounted collisions were
+real).
+
+Separately, the user asked for the boxes' Y (side-to-side) dimension tripled, `0.08m -> 0.24m`.
+Keeping the old box centers would have overlapped the two boxes by ~0.16m and pushed much of the
+source box outside the right arm's reach -- caught by re-running the `ikpy` reachability check
+(promoted to a permanent gate, `scripts/check_pickplace_reach.py`, checking all 4 corners of both
+boxes, mirroring `reachability_check.py`'s role for the bin-picking task) rather than assuming the
+old centers would still work. Findings: the right arm's reach envelope at this table height/X tops
+out around Y=+0.18 to +0.19 (adduction-limited -- reaching toward/past the body's centerline, the
+same shape of constraint that drove the bin-picking task's v10 `shoulder_roll` widening), and fails
+consistently from Y=+0.20 on; the destination direction (more negative Y, abduction/away from the
+body) has much more headroom, verified reachable past Y=-0.38. New box centers: source
+`(0.16, 0.02)` (was `(0.16, 0.06)`), destination `(0.16, -0.26)` (was `(0.16, -0.06)`) -- the
+destination box, not the source box, absorbed the extra separation since it has the reach
+headroom to spare. 0.04m clearance between the two boxes' facing walls. `table.top_size_xy`
+widened `[0.36, 0.30] -> [0.36, 0.60]` to cover the new footprint.
+
+**pp_v2 -> pp_v3 fix (start-attached curriculum):** pp_v2 (post claw/box fix) reached 4/10 pick
+success but 0/10 place success, with `mean_episode_length` pinned at the full 300-step timeout
+across every eval episode -- the policy attaches, then holds position for the rest of the episode.
+Diagnosis: this task had no curriculum at all (full-difficulty cube spawn from step 1) and PPO's
+action std was already collapsing (~0.5 by 200k) before the 4-stage chain
+(approach -> attach -> carry -> release) could plausibly be discovered by chance -- the same root
+cause the bin-picking task hit early on, fixed there via a spawn-radius curriculum (v5).
+
+Fix: `config/pick_place_env.yaml`'s `curriculum` block + `SuctionPickPlaceEnv.reset` --
+`start_attached_prob` fraction of episodes (0.5) skip straight to the carry+release stage: the arm
+snaps to a fixed `mid_carry_pose_rad` and the cube is welded on immediately via the same
+`_attach_suction` mechanism real in-episode attachment uses, rather than requiring a fresh
+approach+attach every episode. The remaining episodes still run the full task from scratch, so the
+already-learned attach skill keeps getting reinforced rather than forgotten -- deliberately not
+100% curriculum, for the same "don't let a shortcut erase an already-learned stage" reason the
+bin-picking task keeps both easy and hard episodes in rotation.
+
+Real bug caught before spending training compute on it: the first version of this curriculum
+reused `ready_pose_rad` as the attach point, but that pose's own EE sits at world Z=0.740 -- only
+1cm above the episode's knockout threshold (`table_top(0.78) - table_edge_margin_m(0.05) = 0.73`)
+and off to the side, not actually over the table at all. Curriculum episodes were failing in 1-2
+steps regardless of what the policy did. Caught by running a random-action sanity rollout and
+noticing curriculum episodes terminating almost immediately (before assuming the curriculum config
+change was correct and moving on). Fixed with a purpose-solved `mid_carry_pose_rad`: `ikpy` against
+`humanoid.urdf` for world `(0.16, -0.12, 0.85)` (the Y-midpoint between the source and destination
+boxes, well above the table) -- 0.0 residual, all 3 joints within range. Re-ran the random-action
+check after the fix: found a genuine success (17 steps, +22 reward) in 1 of 4 curriculum episodes,
+confirming placement is now reachable by exploration alone, not merely theoretically possible.
+
+**pp_v3/pp_v4 -> pp_v5 -> pp_v6 fix (reward exploit, then overcorrection + eval methodology):**
+the start-attached curriculum's continuous `lift_bonus_weight` turned out to be exploitable --
+attach once via the curriculum, then hold still, collecting height-based reward every step
+indefinitely (`mean_reward` climbed 135 -> 290 across checkpoints while `place_success_rate` stayed
+0.0 and no episode ever terminated early). Fixed (Copilot's change, verified correct) by making the
+lift reward a one-time milestone (`lift_bonus` + `stage_transition_bonus`) plus a progress-gated
+`attached_idle_penalty` that only fires when cube-to-destination distance fails to improve --
+pp_v5's reward returned to a realistic -142.72, confirming the exploit closed. But pp_v5 then
+showed `mean_suction_cmd_rate: 0.006` -- the raw `carry_distance_weight_after_lift` term
+(-12.0/m) alone cost more per step while attached (~-1 to -3, simply for being far from the
+destination) than staying unattached (~-0.16/step), making any attach attempt a losing bet before
+the policy had a working carry skill. Fixed by cutting `carry_distance_weight`/`_after_lift`
+roughly 4x and raising `attach_bonus`/`lift_bonus`, so attempting isn't punished before it's had a
+chance to learn. Separately found and fixed a methodology bug: `evaluate_checkpoint`/
+`render_checkpoint_video` built a plain `SuctionPickPlaceEnv()`, still curriculum-enabled -- every
+reported success rate since the curriculum was added was a mix of genuine solves and
+curriculum-assisted starts. Added an `eval_mode` constructor flag that forces the curriculum off
+for eval/video only. Also annealed `curriculum.start_attached_prob` (0.6 -> 0.15 over the run,
+via `PeriodicArtifactCallback`'s periodic `env_method` calls) instead of holding it fixed.
+
+**pp_v6 -> pp_v7 fix (stall penalty, wall tunneling, network size, video overlay):** pp_v6's
+rendered rollout showed the arm driving into a box wall and staying jammed there for the rest of
+the episode, and the cube being pushed hard enough to tunnel clean through a wall on one
+checkpoint. Fixed: (1) `SuctionPickPlaceEnv._update_stall_counter` -- collision AND near-zero arm
+joint velocity sustained for `stall_steps_threshold` steps triggers `stall_penalty` (-0.6/step,
+distinct from the flat `collision_penalty`), same shape as bin-picking's `reward.stuck`; (2)
+`boxes.wall_thickness` 0.004 -> 0.01 m -- MuJoCo's discrete collision detection can miss contacts
+above roughly wall_thickness/timestep (2 m/s at the old thickness, physics_hz=500), a geometry fix
+not a reward one; (3) `policy_kwargs.net_arch: {pi:[128,128], vf:[128,128]}` in
+`config/train_pick_place_ppo.yaml` (every prior run used SB3's default 64x64, untried on this
+4-stage sequential task); (4) `render_checkpoint_video` now burns a per-frame telemetry overlay
+(Pillow) reading from the same `info` dict the reward uses, so what's on screen can't drift from
+what's actually happening -- required expanding `info` with `is_arm_collision`/`is_stalled`/
+`ee_to_cube_dist`/`carry_dist`/`cube_height`.
+
+**pp_v7 -> pp_v8 additions (self-monitoring pipeline, checkpoint continuation, gentleness
+penalty):** pp_v7 (stall penalty + wall fix + bigger network) showed a real, sustained
+pick_success_rate trend (0% -> 60%, 200k -> 1.2M) with place_success still 0%. Per request, the
+pipeline was made self-monitoring rather than requiring a human to watch TensorBoard by hand:
+`training/pick_place/self_monitor.py` adds a continuous CSV metrics log (survives an
+early-terminated run), a periodic (every 400k steps, deliberately infrequent) trend analysis with
+automated stalled-learning detection (flat reward+success AND early-collapsed entropy, sustained
+over a 300k-step window -- either alone is normal PPO noise, both together is treated as stuck and
+stops training automatically), and trajectory-based behavior classification (does the policy enter
+the box, approach the cube, reach-without-grasping, grasp-without-lifting,
+lift-without-transporting, oscillate, or show a lateral bias -- answered from full per-step
+EE/cube trajectories, not just aggregate reward). Also added: `episode_max_steps` 300->600 (more
+budget per episode for the full 4-stage chain); a `cube_disturbance_weight` penalty for pushing the
+cube around while touching-but-not-attached (user's direct observation: the policy was bulldozing
+the cube rather than gripping it, and nothing previously penalized that); and `--init-checkpoint`
+support in `train_ppo_pick_place.py` (`PPO.load(path, env=env)`) so a promising run's weights can
+carry forward into the next iteration instead of always retraining from scratch -- used
+immediately: pp_v8 continues from pp_v7's strongest checkpoint (60% pick success) rather than
+discarding that trend for a fresh random init.
+
+**Training pipeline** (`training/pick_place/train_ppo_pick_place.py`): every `eval_freq` timesteps
+(200,000 by request), `PeriodicArtifactCallback` saves a checkpoint, runs `n_eval_episodes`
+deterministic evaluations (reporting `success_rate`/`pick_success_rate` separately, so "never
+attaches" vs. "attaches but can't place" stays distinguishable the same way bin-picking's
+contact_rate/grasp_rate split has been useful), renders one evaluation episode to `.mp4`, and
+regenerates a self-contained dashboard HTML (`scripts/generate_pick_place_dashboard.py`) with a
+checkpoint dropdown (embedded base64 video + metrics per entry, no external file references) next
+to a `manifest.json` recording every checkpoint's metrics. Runs live under
+`training/pick_place/runs/<run_name>/{checkpoints,videos,logs}/`, kept separate from
+bin-picking's flat `training/checkpoints/` layout. First run: `pp_v1`,
+`config/train_pick_place_ppo.yaml` (2,000,000 timestep budget, stock 64x64 MLP, same PPO
+hyperparameters as bin-picking's `state` profile as a starting point -- no tuning history exists
+for this task yet).

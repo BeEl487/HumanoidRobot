@@ -1,0 +1,37 @@
+# SB3 PPO configuration for the suction pick-place task (training/pick_place/train_ppo_pick_place.py).
+# Separate from config/train_ppo.yaml (the bin-picking task's config) -- independent task, own tuning.
+
+policy: MultiInputPolicy
+total_timesteps: 2000000
+learning_rate: 0.0003
+# n_steps is per-env; rollout size = n_steps * n_envs (4096 here). batch_size must divide that.
+n_steps: 512
+batch_size: 64
+ent_coef: 0.0
+seed: 0
+device: auto
+# pp_v7: every run of this task (and bin-picking) so far used SB3's default 64x64 MLP. This task
+# chains 4 sequential stages (approach -> attach -> carry -> release) through one flat
+# observation -- plausible capacity, not just exploration/reward shaping, is now a real
+# constraint. n_envs (below) already gives enough extra throughput to make trying a bigger
+# network worth the wall-clock cost.
+policy_kwargs:
+  net_arch:
+    pi: [128, 128]
+    vf: [128, 128]
+# Parallel MuJoCo envs (SubprocVecEnv), one process each. 8 logical cores on the training
+# machine; leave 1-2 free for OS/logging/dashboard rendering.
+n_envs: 6
+
+# Every this many timesteps: checkpoint + evaluate + render + update the dashboard
+# (training/pick_place/train_ppo_pick_place.py:PeriodicArtifactCallback). Per-run request: 200k.
+eval_freq: 200000
+n_eval_episodes: 10
+
+# Self-monitoring pipeline (training/pick_place/self_monitor.py):
+log_freq: 5000        # append a metrics_log.csv row every this many steps
+analysis_freq: 400000 # run trend analysis + trajectory behavior classification every this many
+# steps -- deliberately infrequent (does NOT interrupt training in between), per-request.
+stall_window_steps: 300000 # a periodic analysis looks back this far to judge whether learning
+# has stalled (flat reward/success trend AND early-collapsed entropy, sustained over the window --
+# either symptom alone is normal PPO noise at some point in training).

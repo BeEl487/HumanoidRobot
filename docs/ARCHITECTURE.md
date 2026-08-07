@@ -70,34 +70,49 @@ off-device, deploy trained policies back onto the robot for on-device inference.
     per-axis config on the robot, and make sure the undervoltage trip has headroom above the
     battery's real sag-under-load voltage.
 
-### ⚠ Known hardware bug: VBUS divider mismatch (found 2026-08-06)
+### ⚠ VBUS voltage misreads — under investigation, earlier "fix" retracted (updated 2026-08-07)
 
-- The physical board's VBUS sense-resistor divider measures like the firmware's **`v3.6-24V`**
-  variant (divider ratio 11.0), **not** the `v3.6-56V` variant the repo defaults to (ratio 19.0) —
-  confirmed by feeding known voltages and observing a consistent ~1.73x scaling error
-  (19.0/11.0 = 1.727), and independently confirmed by reading the ratio logic directly from
-  `Firmware/Board/v3/Inc/main.h` in the firmware source.
-- Root cause: `Firmware/tup.config`'s `CONFIG_BOARD_VERSION` selects the divider ratio at compile
-  time (`Firmware/Tupfile.lua`). This board was sold/labeled as the "56V variant" but its actual
-  sense resistors match the 24V-variant design. Because this is a clone board with no factory OTP
-  calibration burned in, `odrv0.hw_version_variant` can't be used to detect this — it just echoes
-  back whatever `HW_VERSION_VOLTAGE` the firmware was compiled with, whether or not that matches
-  the real hardware.
-- **This is already fixed in `MKS-Odrive-Mini-Firmware/ODriveFirmware.bin` in this repo** — that
-  file was verified (SHA-256 match) to be a build with `CONFIG_BOARD_VERSION=v3.6-24V`, built from
-  a working WSL toolchain (`~/MKS_ODrive_MINI_custom_firmware` in the `Ubuntu` WSL distro on this
-  machine, which has `tup`/`arm-none-eabi-gcc` already installed — the `Ubuntu-22.04` distro does
-  not). **Unconfirmed: whether this corrected build has actually been flashed to the physical
-  board(s) yet** — flashing needs `openocd`, which isn't installed anywhere on this machine as of
-  this check.
-- **Scope across the fleet:** this was diagnosed on one unit. All 8 ODrive Minis are presumably
-  the same board batch/variant, so the same divider mismatch — and the same fix — likely applies
-  to all 8, not just the one tested. Worth confirming per-unit before assuming, since a mixed batch
-  isn't impossible.
-- This also means the DC bus voltage trip thresholds are computed from `HW_VERSION_VOLTAGE` at
-  compile time (`dc_bus_overvoltage_trip_level = 1.07 * HW_VERSION_VOLTAGE`), so building for
-  `v3.6-24V` changes the overvoltage trip to ~25.7V — check this is still sane for a 12V pack
-  alongside whatever the undervoltage trip is configured to.
+- Exact board: **Makerbase XDrive Mini** (["based on ODrive3.6 with AS5047P on
+  board"](https://makerbase3d.com/product/makerbase-xdrive-mini-high-precision-brushless-servo-motor-controller-based-on-odrive3-6-with-as5047p-on-board/)),
+  documented input range **12–56V** — i.e. the 56V hardware class, not 24V.
+- Symptom: `odrv0.vbus_voltage` reads consistently low vs. a multimeter at the same point (two
+  data points: actual 12V → read 6.9V, actual 22V → read 12.7V — a ~1.73x scaling error in both
+  cases).
+- **2026-08-06 diagnosis (now believed wrong):** a prior session concluded the physical board's
+  VBUS divider matches the firmware's `v3.6-24V` variant (ratio 11.0) rather than `v3.6-56V`
+  (ratio 19.0), reasoning that `MKS-Odrive-Mini-Firmware/ODriveFirmware.bin` in this repo — a
+  `CONFIG_BOARD_VERSION=v3.6-24V` build — was already the fix and just needed flashing.
+- **Why that's retracted:** that `.bin` was confirmed (2026-08-07) to have been built as `v3.6-24V`
+  since its very first commit (`13d48e6`, 2026-08-02) — it was never a build produced *in response*
+  to the voltage diagnosis, just a pre-existing, unverified `tup.config` setting that happened to
+  scale in the right direction to look like a match. Three independent sources instead agree the
+  board is the **56V class**: (1) this exact product's documented 12–56V input range, (2) the
+  official Makerbase firmware release (`ODriveFirmware_v3.6-56V.bin`, from
+  [makerbase-motor/MKS-ODrive](https://github.com/makerbase-motor/MKS-ODrive)), and (3) the
+  `dev-get_iq` fork's own out-of-the-box default (`shazib2t/MKS_ODrive_MINI_custom_firmware`
+  README: "compiled for V3.6 56V variant board", default `CONFIG_BOARD_VERSION=v3.6-56V`). The
+  user also confirms the board's original (factory) firmware read voltage correctly, before this
+  repo's (always-24V) build was ever flashed.
+- **Not yet resolved:** why the misread happens if the board is genuinely 56V — that requires a
+  clean test with a *known* config, since no reading so far has been taken with a firmware build
+  whose `CONFIG_BOARD_VERSION` was confirmed at the time of measurement. Candidates to try:
+  - Rebuild the fork with its untouched default (`CONFIG_BOARD_VERSION=v3.6-56V`) and flash that.
+  - Flash the community-dumped factory image,
+    [`XDRIVE_MINI_original_FW.bin`](https://github.com/justlovescience/MKS-XDRIVE-MINI/blob/main/Firmwares/XDRIVE_MINI_original_FW.bin)
+    (a real ST-Link dump of a working XDrive Mini, from
+    [justlovescience/MKS-XDRIVE-MINI](https://github.com/justlovescience/MKS-XDRIVE-MINI)), and
+    test against that as a known-good baseline.
+  - **Status: waiting on the user to test one of the above on physical hardware** before drawing
+    any further conclusion.
+- **Do not flash the existing `MKS-Odrive-Mini-Firmware/ODriveFirmware.bin` (`v3.6-24V`) to any
+  unit** until this is resolved — treat it as an unverified artifact, not a fix.
+- This also affects DC bus voltage trip thresholds, which are computed from `HW_VERSION_VOLTAGE`
+  at compile time (`dc_bus_overvoltage_trip_level = 1.07 * HW_VERSION_VOLTAGE`) — whichever variant
+  turns out correct, re-check that the resulting overvoltage trip and the undervoltage trip are
+  both still sane for this system's 12V pack.
+- **Scope across the fleet:** all 8 units are presumably the same board batch/variant, so whatever
+  this turns out to be likely applies to all 8, not just the one under test — but confirm per-unit
+  before assuming, since a mixed batch isn't impossible.
 
 ## 4. Low-level control — Teensy 4.1
 
@@ -211,16 +226,18 @@ instead of just deleting them.
 - [ ] Camera setup (count / type / mounting)
 - [ ] Actual per-axis CAN node ID assignments (repo sample suggests increments of 2)
 - [ ] Actual motor model(s) and confirmed pole pairs / current limits per axis
-- [x] Root cause of bad VBUS readings found: board's divider matches `v3.6-24V`, not `v3.6-56V`
-      (see §3) — fix is built (`ODriveFirmware.bin` verified as a `v3.6-24V` build) but **not
-      confirmed flashed** to any board yet
-- [ ] Flash the corrected `v3.6-24V` `ODriveFirmware.bin` to all 8 units (confirm each is the same
-      board variant first) — needs `openocd`, not currently installed anywhere on this machine
+- [ ] VBUS misread root cause **retracted, not yet re-solved** — earlier `v3.6-24V` diagnosis was
+      based on an unverified pre-existing build, not a confirmed fix; board is very likely the
+      56V class per vendor spec + official firmware + fork default (see §3). **Blocked on user
+      testing** either a fresh `v3.6-56V` rebuild or the community-dumped
+      `XDRIVE_MINI_original_FW.bin` on physical hardware.
+- [ ] Do **not** flash `MKS-Odrive-Mini-Firmware/ODriveFirmware.bin` (`v3.6-24V`) to any unit until
+      the above is resolved
 - [ ] Install `openocd` (e.g. in the `Ubuntu` WSL distro alongside the existing `tup`/
       `arm-none-eabi-gcc` toolchain) before flashing can happen
-- [ ] After reflashing, re-verify `odrv0.vbus_voltage` reads correctly and re-check/re-tune the
-      undervoltage trip (overvoltage trip is now computed as `1.07 * 24 ≈ 25.7V` post-fix — sanity
-      check this and the undervoltage trip are both still appropriate for a 12V pack)
+- [ ] Once a config is confirmed correct, re-verify `odrv0.vbus_voltage` reads accurately and
+      re-check/re-tune the undervoltage trip (overvoltage trip is `1.07 * HW_VERSION_VOLTAGE` —
+      sanity check both against this system's 12V pack once the variant is settled)
 - [ ] Battery pack spec (chemistry, cell count, capacity, BMS model)
 - [x] Learning approach — phased: scripted kinematic control now, teleop+imitation learning later (§8)
 - [ ] Gripper / end-effector plan for the arms
