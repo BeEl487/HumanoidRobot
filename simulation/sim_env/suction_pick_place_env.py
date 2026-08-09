@@ -161,8 +161,11 @@ class SuctionPickPlaceEnv(gym.Env):
         self._has_lifted_this_episode = False
         self._has_placed_this_episode = False
         self._prev_carry_dist: float | None = None
+        self._prev_height: float | None = None
         self._suction_cmd_on = False
         self._stall_counter = 0
+        self._idle_counter = 0
+        self._steps_since_attach = 0
         self._prev_action = np.zeros(n_action, dtype=np.float64)
 
     def set_start_attached_prob(self, prob: float) -> None:
@@ -180,6 +183,10 @@ class SuctionPickPlaceEnv(gym.Env):
         pose = self.cfg["curriculum"]["mid_carry_pose_rad"]
         return np.array([pose["shoulder_pitch"], pose["shoulder_roll"], pose["elbow"]])
 
+    def _near_dest_pose(self) -> np.ndarray:
+        pose = self.cfg["curriculum"]["near_dest_pose_rad"]
+        return np.array([pose["shoulder_pitch"], pose["shoulder_roll"], pose["elbow"]])
+
     def _apply_ready_pose(self) -> None:
         self.data.qpos[self._arm_qposadr] = self._ready_pose()
         self.data.qpos[self._gripper_qposadr] = self._gripper_fixed_pos
@@ -189,6 +196,7 @@ class SuctionPickPlaceEnv(gym.Env):
     def _deactivate_suction(self) -> None:
         self.data.eq_active[self._eq_id] = 0
         self._is_attached = False
+        self._steps_since_attach = 0
 
     def reset(self, *, seed: int | None = None, options: dict | None = None):
         super().reset(seed=seed)
@@ -199,14 +207,37 @@ class SuctionPickPlaceEnv(gym.Env):
         self._deactivate_suction()
 
         curriculum_cfg = self.cfg.get("curriculum", {})
-        start_attached = (
-            curriculum_cfg.get("enabled", False)
-            and self._rng.uniform() < curriculum_cfg.get("start_attached_prob", 0.0)
-        )
+        # pp_v15 -> pp_v16: three-way curriculum draw, cumulative -- start_carrying_prob (new,
+        # highest priority slice) takes episodes closest to the goal first, then start_attached_prob
+        # (existing) covers the rest of the assisted episodes, remainder run the full task from
+        # scratch. Order matters only for how the probability mass is allocated, not semantics.
+        curriculum_enabled = curriculum_cfg.get("enabled", False)
+        u = self._rng.uniform() if curriculum_enabled else 1.0
+        start_carrying_prob = curriculum_cfg.get("start_carrying_prob", 0.0)
+        start_attached_prob = curriculum_cfg.get("start_attached_prob", 0.0)
+        start_carrying = u < start_carrying_prob
+        start_attached = (not start_carrying) and u < (start_carrying_prob + start_attached_prob)
 
         randomize_cube_physics(self.model, self._rng)
         self._has_attached_this_episode = False
-        if start_attached:
+        self._has_lifted_this_episode = False
+        if start_carrying:
+            # New curriculum stage (see config/pick_place_env.yaml's curriculum block): skip
+            # straight to "already attached, already above the destination, already past the lift
+            # threshold" -- directly exposes the release-accuracy reward gradient in isolation,
+            # the same way start_attached_prob exposes carry from the mid-carry point. Motivated by
+            # place_success_rate being ~0% almost the entire project despite pp_9-15's approach/
+            # attach-stage fixes -- carry never had its own curriculum shortcut before this.
+            self.data.qpos[self._arm_qposadr] = self._near_dest_pose()
+            self.data.ctrl[self._arm_actuator_id] = self._near_dest_pose()
+            mujoco.mj_forward(self.model, self.data)
+            self._teleport_cube_to(self._ee_pos())
+            mujoco.mj_forward(self.model, self.data)
+            self._attach_suction()
+            self._has_attached_this_episode = True
+            self._has_lifted_this_episode = True
+            self._steps_since_attach = 0
+        elif start_attached:
             # Curriculum episode (see config/pick_place_env.yaml's curriculum block): skip the
             # approach+attach stage entirely by snapping the arm to a verified mid-carry pose
             # (NOT ready_pose_rad -- see mid_carry_pose_rad's comment for why) and welding the
@@ -219,6 +250,7 @@ class SuctionPickPlaceEnv(gym.Env):
             mujoco.mj_forward(self.model, self.data)
             self._attach_suction()
             self._has_attached_this_episode = True
+            self._steps_since_attach = 0
         else:
             randomize_cube_in_box(
                 self.model, self.data, self._rng, (self._src_x, self._src_y), self._floor_top_z
@@ -228,11 +260,12 @@ class SuctionPickPlaceEnv(gym.Env):
         self.shaper.reset(self.data.ctrl[self._arm_actuator_id])
         self._step_count = 0
         self._settle_count = 0
-        self._has_lifted_this_episode = False
         self._has_placed_this_episode = False
         self._prev_carry_dist = None
+        self._prev_height = None
         self._suction_cmd_on = False
         self._stall_counter = 0
+        self._idle_counter = 0
         self._prev_action = np.zeros(self.action_space.shape[0], dtype=np.float64)
         return self._get_obs(), {}
 
@@ -281,6 +314,23 @@ class SuctionPickPlaceEnv(gym.Env):
         else:
             self._stall_counter = 0
         return self._stall_counter >= self.cfg["reward"]["stall_steps_threshold"]
+
+    def _update_idle_counter(self) -> bool:
+        """pp_v13 -> pp_v14 (user request): tracks consecutive steps of near-zero arm motion
+        REGARDLESS of collision -- unlike `_update_stall_counter` (which only fires when jammed
+        against furniture), this catches the freeze/hover/park behaviors seen across pp_v8
+        (frozen post-attach), pp_v11 (frozen just outside attach range), and pp_v12 (parked inside
+        the box, and separately circling in a tight band without committing to a full approach) --
+        none of which involve a collision, so `is_stalled` never fired for any of them. Only
+        meaningful pre-attach: once attached, `attached_idle_penalty`/`_after_lift` already penalize
+        lack of carry progress, and briefly holding still while genuinely aligning for a lift/release
+        is more defensible than pre-attach stillness, which has no legitimate reason to persist."""
+        mean_arm_speed = float(np.mean(np.abs(self.data.qvel[self._arm_dofadr])))
+        if mean_arm_speed < self.cfg["reward"]["idle_velocity_threshold_rad_s"]:
+            self._idle_counter += 1
+        else:
+            self._idle_counter = 0
+        return self._idle_counter >= self.cfg["reward"]["idle_steps_threshold"]
 
     def _is_cube_in_dest_box(self, cube_pos: np.ndarray) -> bool:
         dx = abs(cube_pos[0] - self._dst_x)
@@ -336,20 +386,53 @@ class SuctionPickPlaceEnv(gym.Env):
             suction_cmd_on = float(action[3]) > self.cfg["suction"]["deactivation_threshold"]
         self._suction_cmd_on = suction_cmd_on
 
+        # pp_v9 -> pp_v10: two-part chatter fix. User observed (and pick_place_rewards.py's reward
+        # log confirmed) rapid attach/detach cycling with reward spiking each cycle -- root cause
+        # was attach_bonus paying out on EVERY attach, not just the episode's first (unlike
+        # lift_bonus, which already had this gate via _has_lifted_this_episode). A chatter cycle
+        # (attach +12, release outside dest -3, reattach +12, ...) nets +9/cycle, farmable
+        # indefinitely -- same shape of exploit as pp_v3/v4's continuous lift_bonus_weight bug.
+        # Fix 1 (reward): only pay attach_bonus on the true first attach of the episode --
+        # `first_attach_this_episode` below, checked against the OLD value of
+        # `_has_attached_this_episode` before it's updated. Re-attaching later in the same episode
+        # still works physically (just_attached still fires for info/curriculum bookkeeping) but no
+        # longer pays the milestone bonus again.
+        # Fix 2 (physics): a `min_attached_steps_before_detach` debounce (config, default 5 steps =
+        # 0.25s @ 20Hz) -- once attached, a detach command is ignored until this many steps have
+        # passed, so single-step action noise crossing the hysteresis band can't toggle the weld at
+        # all, independent of whether the reward incentive is fixed.
         if not was_attached and suction_cmd_on:
             dist = float(np.linalg.norm(ee_pos - cube_pos))
             if self._is_suction_touching() and dist <= self.cfg["suction"]["max_attach_distance_m"]:
+                first_attach_this_episode = not self._has_attached_this_episode
                 self._attach_suction()
-                just_attached = True
+                just_attached = first_attach_this_episode
                 self._has_attached_this_episode = True
+                self._steps_since_attach = 0
         elif was_attached and not suction_cmd_on:
-            released_over_dest = self._is_cube_in_dest_box(cube_pos)
-            self._deactivate_suction()
-            if not released_over_dest:
-                just_released_early = True
+            min_hold = self.cfg["suction"].get("min_attached_steps_before_detach", 0)
+            if self._steps_since_attach >= min_hold:
+                released_over_dest = self._is_cube_in_dest_box(cube_pos)
+                self._deactivate_suction()
+                if not released_over_dest:
+                    just_released_early = True
+            else:
+                self._steps_since_attach += 1
+        elif was_attached:
+            self._steps_since_attach += 1
 
         is_arm_collision = self._is_arm_collision()
         is_stalled = self._update_stall_counter(is_arm_collision)
+        # pp_v13 -> pp_v14: pure stillness, independent of collision -- see _update_idle_counter's
+        # docstring. Only meaningful pre-attach (post-attach stillness is already covered by
+        # attached_idle_penalty/_after_lift, which key off carry PROGRESS rather than raw motion).
+        # Counter is reset (not just ignored) while attached so a stale count can't immediately
+        # re-trigger the instant suction releases.
+        if self._is_attached:
+            self._idle_counter = 0
+            is_idle = False
+        else:
+            is_idle = self._update_idle_counter()
         height_above_table = float(cube_pos[2] - self._table_top_z)
         carry_dist = float(np.linalg.norm(cube_pos[:2] - self._dest_center_xy))
         ee_to_cube_dist = float(np.linalg.norm(ee_pos - cube_pos))
@@ -383,10 +466,12 @@ class SuctionPickPlaceEnv(gym.Env):
         reward = compute_step_reward(
             ee_pos, cube_pos, self._dest_center_xy, height_above_table,
             self._is_attached, just_attached, just_lifted, just_placed, just_released_early, is_arm_collision,
-            is_stalled, cube_disturbance, self._prev_carry_dist, self._has_lifted_this_episode, action, self._prev_action, self.cfg,
+            is_stalled, is_idle, cube_disturbance, self._prev_carry_dist, self._prev_height,
+            self._has_lifted_this_episode, action, self._prev_action, self.cfg,
         )
         self._prev_action = action
         self._prev_carry_dist = carry_dist
+        self._prev_height = height_above_table
 
         terminated = False
         truncated = False
@@ -395,6 +480,7 @@ class SuctionPickPlaceEnv(gym.Env):
             "is_attached": self._is_attached,
             "is_arm_collision": is_arm_collision,
             "is_stalled": is_stalled,
+            "is_idle": is_idle,
             "ee_to_cube_dist": ee_to_cube_dist,
             "carry_dist": carry_dist,
             "cube_height": height_above_table,

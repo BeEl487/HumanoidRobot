@@ -40,6 +40,7 @@ from collections import deque
 import imageio
 import mujoco
 import numpy as np
+import subprocess
 import yaml
 from PIL import Image, ImageDraw
 from stable_baselines3 import PPO
@@ -79,6 +80,7 @@ def _draw_stats_overlay(frame: np.ndarray, step: int, info: dict, reward: float)
     draw = ImageDraw.Draw(img, "RGBA")
     is_stalled = bool(info.get("is_stalled"))
     is_collision = bool(info.get("is_arm_collision"))
+    is_idle = bool(info.get("is_idle"))
     warn = (255, 110, 110, 255)
     normal = (255, 255, 255, 255)
     lines = [
@@ -89,7 +91,7 @@ def _draw_stats_overlay(frame: np.ndarray, step: int, info: dict, reward: float)
         (f"ee->cube: {info.get('ee_to_cube_dist', 0.0):.3f} m", normal),
         (f"cube->dest: {info.get('carry_dist', 0.0):.3f} m", normal),
         (f"cube height: {info.get('cube_height', 0.0):.3f} m", normal),
-        (f"collision: {is_collision}  stalled: {is_stalled}", warn if (is_collision or is_stalled) else normal),
+        (f"collision: {is_collision}  stalled: {is_stalled}  idle: {is_idle}", warn if (is_collision or is_stalled or is_idle) else normal),
         (f"cube disturbance: {info.get('cube_disturbance', 0.0):.3f} m/s", warn if info.get("cube_disturbance", 0.0) > 0 else normal),
         (f"reward: {reward:+.2f}", normal),
     ]
@@ -100,6 +102,33 @@ def _draw_stats_overlay(frame: np.ndarray, step: int, info: dict, reward: float)
     for i, (line, color) in enumerate(lines):
         draw.text((6, 5 + i * line_h), line, fill=color)
     return np.asarray(img)
+
+
+def notify_windows(title: str, message: str) -> None:
+    """Fires a native Windows toast notification via a background PowerShell process, so a
+    checkpoint that saves/evaluates/renders (~seconds) is announced without blocking the training
+    loop while it runs. Uses System.Windows.Forms.NotifyIcon's balloon tip -- ships with every
+    Windows .NET install, so no extra pip/PS-module dependency (e.g. BurntToast) is required.
+    Best-effort: a notification failure (e.g. running headless/non-Windows) must never interrupt
+    training, so exceptions are swallowed."""
+    ps_script = f"""
+Add-Type -AssemblyName System.Windows.Forms
+$ni = New-Object System.Windows.Forms.NotifyIcon
+$ni.Icon = [System.Drawing.SystemIcons]::Information
+$ni.Visible = $true
+$ni.BalloonTipTitle = {json.dumps(title)}
+$ni.BalloonTipText = {json.dumps(message)}
+$ni.ShowBalloonTip(10000)
+Start-Sleep -Seconds 10
+$ni.Dispose()
+"""
+    try:
+        subprocess.Popen(
+            ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_script],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except Exception as e:  # pragma: no cover -- notifications must never crash training
+        print(f"[notify_windows] failed to send notification: {e}")
 
 
 def evaluate_checkpoint(model: PPO, n_episodes: int) -> dict:
@@ -329,6 +358,22 @@ class PeriodicArtifactCallback(BaseCallback):
         if self.verbose:
             print(f"[PeriodicArtifactCallback] analysis written to {report_path} (stalled={stalled})")
 
+        reward_trend = "n/a" if window.get("insufficient_data") else f"{window.get('reward_relative_change', 0.0):+.0%}"
+        behavior_summary = "n/a"
+        if behavior and behavior.get("n_episodes"):
+            failure_fractions = {
+                "reached, no grasp": behavior.get("reached_no_grasp_fraction", 0.0),
+                "grasped, no lift": behavior.get("grasped_no_lift_fraction", 0.0),
+                "lifted, no transport": behavior.get("lifted_no_transport_fraction", 0.0),
+                "stuck/collision": behavior.get("stuck_at_collision_fraction", 0.0),
+            }
+            dominant = max(failure_fractions, key=failure_fractions.get)
+            behavior_summary = f"{dominant} ({failure_fractions[dominant]:.0%})"
+        notify_windows(
+            f"Analysis ready: {self.run_dir.name} @ {step:,}",
+            f"{report_path.name} | reward trend {reward_trend} | stalled={stalled} | {behavior_summary}",
+        )
+
         if stalled:
             # Capture a final checkpoint/eval/video AT the stall point before stopping, so the
             # dashboard and the video the agent visually reviews afterward both reflect exactly
@@ -337,6 +382,10 @@ class PeriodicArtifactCallback(BaseCallback):
             self._run_cycle(is_final=True)
             (self.run_dir / "STALL_DETECTED.flag").write_text(
                 f"stalled at step {step}\nsee {report_path.name}\n", encoding="utf-8"
+            )
+            notify_windows(
+                f"Training STALLED: {self.run_dir.name} @ {step:,}",
+                f"Learning stalled -- training stopped automatically. See {report_path.name}",
             )
             return True
         return False
@@ -387,6 +436,13 @@ class PeriodicArtifactCallback(BaseCallback):
                 f"pick_success_rate={metrics['pick_success_rate']:.2f} mean_reward={metrics['mean_reward']:.2f} "
                 f"-> {dashboard_path}"
             )
+
+        pct = f"{100 * step / self.total_timesteps:.0f}%" if self.total_timesteps else "?"
+        notify_windows(
+            f"Checkpoint {'(final) ' if is_final else ''}{self.run_dir.name} @ {step:,}",
+            f"progress {pct} | success {metrics['success_rate']:.0%} | "
+            f"pick {metrics['pick_success_rate']:.0%} | reward {metrics['mean_reward']:.1f}",
+        )
 
 
 def train(

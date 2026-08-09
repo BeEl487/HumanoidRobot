@@ -6,10 +6,40 @@ total_timesteps: 2000000
 learning_rate: 0.0003
 # n_steps is per-env; rollout size = n_steps * n_envs (4096 here). batch_size must divide that.
 n_steps: 512
-batch_size: 64
-ent_coef: 0.0
+batch_size: 256
+# pp_v9: batch_size raised 64->256 (rollout buffer = n_steps*n_envs = 8192, still divides evenly --
+# 32 minibatches/epoch) so the GPU does meaningfully more work per update call instead of many tiny
+# ones; a 128x128 MLP barely dents a modern GPU at batch=64.
+ent_coef: 0.003
+# pp_v8 -> pp_v9: self-monitor's own analysis reports show entropy collapsing 1.497 -> 0.009 by
+# step 1.6M ("COLLAPSED EARLY"), and a rendered rollout (ckpt_1600032) visually confirmed the
+# consequence -- the policy freezes into an identical action for ~400 of 600 steps/episode,
+# attached but never crossing the lift threshold. ent_coef was 0.0 for every run of this task so
+# far (nothing was ever pushing back against collapse). A small positive entropy bonus keeps enough
+# exploration noise alive for the carry->place chain to still be discoverable instead of the policy
+# locking onto the first locally-positive equilibrium it finds.
+#
+# pp_v11 -> pp_v12: 0.01 OVERCORRECTED. Tracked the Gaussian policy's `std` value across the whole
+# pp_v9->v10->v11 continuation lineage (~2.2M cumulative steps under ent_coef=0.01): 0.231 -> 0.324
+# -> 0.455 -> 0.823, monotonic, never stabilizing. A rendered rollout at pp_v11's 1M checkpoint
+# confirmed the consequence directly -- ee->cube distance frozen at 0.051m (just outside
+# max_attach_distance_m: 0.03) from step 91 to step 589 of a 600-step episode, `attached: False`
+# the whole time: the action noise is now too large for the policy to reliably close the final ~2cm
+# needed to trigger suction, so it parks near the cube instead of committing. User independently
+# reported the exact same "goes close to the cube then waits" behavior before this was measured.
+# Cut 0.01 -> 0.003 (roughly a third) as a middle value between the two failure extremes (collapse
+# at 0.0, runaway at 0.01) -- NOT re-derived from first principles, just a considered guess between
+# two now-confirmed-bad endpoints. Re-check the std trend at pp_v12's own checkpoints before
+# assuming this value is actually stable long-term; if it still drifts (either direction) over a
+# comparable number of cumulative steps, an annealed ent_coef (high early for discovery, low late
+# for precision -- mirroring how start_attached_prob is already annealed) is the more principled
+# fix than hand-picking another single fixed value.
 seed: 0
-device: auto
+device: cuda
+# pp_v9: this run trains on a machine with a working CUDA torch install (RTX 5070) -- pin
+# explicitly instead of "auto" so a misdetection can't silently fall back to CPU for the policy
+# net's forward/backward passes. Note MuJoCo env stepping itself (SubprocVecEnv workers) is
+# inherently CPU-bound regardless of this setting -- GPU only accelerates the PPO network update.
 # pp_v7: every run of this task (and bin-picking) so far used SB3's default 64x64 MLP. This task
 # chains 4 sequential stages (approach -> attach -> carry -> release) through one flat
 # observation -- plausible capacity, not just exploration/reward shaping, is now a real
@@ -19,9 +49,12 @@ policy_kwargs:
   net_arch:
     pi: [128, 128]
     vf: [128, 128]
-# Parallel MuJoCo envs (SubprocVecEnv), one process each. 8 logical cores on the training
-# machine; leave 1-2 free for OS/logging/dashboard rendering.
-n_envs: 6
+# Parallel MuJoCo envs (SubprocVecEnv), one process each.
+# pp_v9: raised 6->16 -- this run's machine has 20 logical cores / 45GB free RAM (vs. the 8-core
+# machine pp_v1-v8 ran on), and env stepping is the actual throughput bottleneck (MuJoCo physics is
+# CPU-only regardless of the GPU policy-net setting above). Leaves 4 cores free for OS/logging/
+# dashboard rendering/GPU driver overhead.
+n_envs: 16
 
 # Every this many timesteps: checkpoint + evaluate + render + update the dashboard
 # (training/pick_place/train_ppo_pick_place.py:PeriodicArtifactCallback). Per-run request: 200k.

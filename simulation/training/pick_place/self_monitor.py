@@ -105,9 +105,23 @@ def analyze_window(csv_path: pathlib.Path, current_step: int, window_steps: int)
     reward_relative_change = (reward_slope * len(rewards)) / (abs(reward_now) + 1e-6) if reward_now is not None else 0.0
 
     entropy_now = float(np.mean(entropy[-5:])) if entropy else None
+    # A Gaussian's differential entropy (what "entropy" here actually is -- see
+    # train_ppo_pick_place.py's `-entropy_loss`) is SIGNED and legitimately goes negative for a
+    # tight-but-not-degenerate distribution (std < ~0.242), crossing zero well before the policy is
+    # anywhere near deterministic. A ratio test (entropy_now/entropy_start < threshold) silently
+    # breaks whenever the two values have opposite sign: found via pp_v9/pp_v10's reports both
+    # claiming "COLLAPSED EARLY" (entropy_start=-0.214 -> entropy_now=+1.239 -- entropy INCREASING,
+    # exactly the ent_coef fix working as intended) because a negative/positive ratio is always
+    # < 0.25 regardless of actual magnitude change. Fixed with an absolute-floor + decreased-from-
+    # start test instead, which stays well-defined across sign changes: ENTROPY_COLLAPSE_FLOOR
+    # (0.15) is calibrated against pp_v8's confirmed real collapse (1.497 -> 0.009, video-verified
+    # frozen policy) comfortably clearing the floor, while pp_v9/pp_v10's rising-entropy case does
+    # not (entropy_now=1.239 is both above the floor and above entropy_start).
+    ENTROPY_COLLAPSE_FLOOR = 0.15
     entropy_collapsed = (
-        entropy_start is not None and entropy_now is not None and abs(entropy_start) > 1e-6
-        and (entropy_now / entropy_start) < 0.25
+        entropy_start is not None and entropy_now is not None
+        and entropy_now < ENTROPY_COLLAPSE_FLOOR
+        and entropy_now < entropy_start
     )
 
     return {

@@ -13,3 +13,4 @@ Full hardware/software design, wiring assignments, and open decisions:
 - [firmware/teensy/](firmware/teensy/) — Teensy 4.1 low-level motor control firmware
 - [jetson/](jetson/) — Jetson high-level compute (perception, policy inference)
 - [MKS-Odrive-Mini-Firmware/](MKS-Odrive-Mini-Firmware/) — built ODrive Mini firmware binary
+- [simulation/](simulation/README.md) — MuJoCo RL simulation track (independent research, see its README for full docs index)
