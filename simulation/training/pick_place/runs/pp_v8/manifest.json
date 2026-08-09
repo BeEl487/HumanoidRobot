@@ -134,8 +134,38 @@
       "mean_suction_cmd_rate": 0.763,
       "mean_max_stage": 0.7,
       "n_episodes": 10
+    },
+    {
+      "step": 2000040,
+      "checkpoint": "checkpoints/ckpt_2000040.zip",
+      "video": "videos/ckpt_2000040.mp4",
+      "is_final": false,
+      "timestamp": "2026-08-07T11:58:05.600485+00:00",
+      "mean_reward": 72.62396243409503,
+      "mean_episode_length": 600.0,
+      "success_rate": 0.0,
+      "pick_success_rate": 0.7,
+      "place_success_rate": 0.0,
+      "mean_suction_cmd_rate": 0.9296666666666665,
+      "mean_max_stage": 0.7,
+      "n_episodes": 10
+    },
+    {
+      "step": 2002944,
+      "checkpoint": "checkpoints/ckpt_2002944.zip",
+      "video": "videos/ckpt_2002944.mp4",
+      "is_final": true,
+      "timestamp": "2026-08-07T11:58:41.757060+00:00",
+      "mean_reward": 151.25430561599282,
+      "mean_episode_length": 600.0,
+      "success_rate": 0.0,
+      "pick_success_rate": 0.7,
+      "place_success_rate": 0.0,
+      "mean_suction_cmd_rate": 0.9058333333333334,
+      "mean_max_stage": 0.8,
+      "n_episodes": 10
     }
   ],
   "total_timesteps_target": 2000000,
-  "last_updated": "2026-08-07T11:52:49.116368+00:00"
+  "last_updated": "2026-08-07T11:58:41.757060+00:00"
 }

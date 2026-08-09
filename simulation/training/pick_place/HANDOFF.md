@@ -14,26 +14,31 @@ built after, an earlier "bin-picking" finger-grasp task in the same repo (`sim_e
 its own log at `../TRAINING_LOG.md`) -- don't confuse the two; they have separate scenes, configs,
 reward files, and training scripts. This doc is about the suction pick-place task only.
 
-**Current state, as of this handoff:** `pp_v8` is training in the background, continuing from
-`pp_v7`'s strongest checkpoint (60% pick-success rate). **Do not start a new run without the
-user's explicit go-ahead** -- that was the standing instruction at the time of this handoff.
-Monitoring/analysis/documentation work is fine; launching training is not, until told otherwise.
+**Current state, as of this handoff:** `pp_v8` (continued from `pp_v7`'s 60%-pick-success
+checkpoint) **completed its full 2,000,000-step budget cleanly** -- no stall, no crash. Final:
+70% pick success, 0% place success, but the trajectory analysis narrowed the bottleneck sharply:
+90% of episodes now reach and grasp the cube, and 80% of those grasp-but-never-lift. That's the
+next target. **No further run has been launched -- do not start one without the user's explicit
+go-ahead.** Monitoring/analysis/documentation work is fine; launching training is not, until told
+otherwise.
 
 ## Where things stand right now
 
-- Process: `python train_ppo_pick_place.py --run-name pp_v8 --init-checkpoint runs/pp_v7/checkpoints/ckpt_1200024.zip`,
-  running in `simulation/training/pick_place/`, log at `train_pp_v8.log`.
+- No training process running. `pp_v8`'s log (`train_pp_v8.log`) ends with "Training complete."
 - TensorBoard: `python -m tensorboard.main --logdir training/pick_place/runs --port 6006` (covers
-  every run under `runs/`).
+  every run under `runs/`) -- check if it's still alive before assuming it needs restarting.
 - Cross-run browser: `training/serve_runs.py --port 8200` (built by another session; read-only,
   auto-discovers any `training/<task>/runs/<name>/manifest.json`, no maintenance needed).
-- Progress as of last check: ~1.24M-2M+ of a 2,000,000-step budget (check `runs/pp_v8/manifest.json`
-  for the latest checkpoint's actual numbers -- don't trust this document's numbers as current by
-  the time you're reading it, always re-check the live files).
-- Self-monitoring analysis reports so far: `runs/pp_v8/analysis_400002.md`, `analysis_800004.md`,
-  `analysis_1200006.md` -- no stall detected in any of them.
-- No `runs/pp_v8/STALL_DETECTED.flag` file as of last check -- if one exists when you read this,
-  training already stopped itself; see "If pp_v8 has stalled" below before doing anything else.
+- Final state: `runs/pp_v8/checkpoints/final.zip` (2,002,944 steps), `runs/pp_v8/dashboard.html`.
+  Check `runs/pp_v8/manifest.json` for the exact final numbers -- don't trust this document's
+  numbers as current by the time you're reading it, always re-check the live files.
+- Self-monitoring analysis reports: `runs/pp_v8/analysis_{400002,800004,1200006,1600008,2000010}.md`
+  -- five ran automatically across the full run, none flagged a stall. Read `analysis_2000010.md`
+  (the final one) first -- it has the most specific behavior breakdown to date (see
+  `EXPERIMENTS.md`'s pp_v8 row).
+- No `runs/pp_v8/STALL_DETECTED.flag` -- this run ended by completing its budget, not by the
+  self-monitoring stop mechanism. The "if stalled" procedure below is for the NEXT run, should one
+  hit that condition.
 
 ## How to check status right now (read-only, always safe)
 
@@ -137,10 +142,21 @@ simulation/
 
 ## Immediate next steps (as of this handoff)
 
-1. Keep monitoring pp_v8 (read-only checks, per above) -- do not restart TensorBoard/serve_runs.py
-   unless they've actually died (check processes first).
-2. When the next self-monitoring analysis or stall fires, follow the "if stalled" procedure above,
-   or if not stalled, just keep letting it run -- don't interrupt a healthy trend.
-3. When the user is ready for a next iteration (their call, not yours to initiate), consult
-   `EXPERIMENTS.md` and `AUTOMATED_TRAINING_GUIDE.md`'s §7 checklist (what's changing / why / which
-   failure mode / continue-vs-restart) before proposing anything.
+pp_v8 has already completed -- there's nothing to monitor right now. When the user asks for a next
+iteration (their call, not yours to initiate):
+
+1. Read `runs/pp_v8/analysis_2000010.md` and `EXPERIMENTS.md`'s pp_v8 row -- the diagnosis is
+   already done: reach and grasp are essentially solved (90%), grasp-without-lift is the isolated
+   bottleneck (80% of grasps). A next experiment should target lifting specifically -- candidates
+   worth considering (not decided, just the obvious places to look): is `lift_threshold_m` too
+   strict relative to how the weld constraint actually behaves under the arm's own motion; is there
+   enough reward gradient between "just attached" and "lifted" for the policy to discover the
+   motion; is the arm's own vertical reach/control precision the limiting factor near the box floor
+   (worth a rendered-video look, not just metrics).
+2. Consult `AUTOMATED_TRAINING_GUIDE.md`'s §7 checklist (what's changing / why / which failure mode
+   / continue-vs-restart, with justification) before proposing a `pp_v9`. Given pp_v8's real,
+   sustained improvement and clean completion, continuing from `runs/pp_v8/checkpoints/final.zip`
+   is very likely the right call over a fresh restart -- but state that reasoning explicitly rather
+   than assuming it.
+3. Add the new row to `EXPERIMENTS.md` (with the rationale filled in) before launching, and only
+   launch with the user's explicit go-ahead.

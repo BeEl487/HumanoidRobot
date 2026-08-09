@@ -25,7 +25,7 @@ contact_rate/grasp_rate has provided throughout that task's log.
 | pp_v5 | + exploit fix (one-time lift_bonus, progress-gated idle penalty) | −142.72 (realistic) | 30% | 0% | stopped -- suction avoidance overcorrection |
 | pp_v6 | + curriculum-free eval, softened after-lift penalties, annealed curriculum | −69.2 → −49.2 (200k→400k, clean numbers) | 20% | 0% | stopped -- arm jamming/wall tunneling found in rollout |
 | pp_v7 | + stall penalty, thicker box walls (tunneling fix), 128x128 network, synced video overlay | −213 → +44 → −60 (200k→600k→1.2M, noisy but trending up) | 0% → **60%** (200k→1.2M) | 0% | stopped at 1.2M -- continued into pp_v8, not discarded |
-| **pp_v8** | + self-monitoring pipeline, 600-step episodes, cube-disturbance ("gentleness") penalty, **continued from pp_v7's 1.2M weights** (below) | pending | pending | pending | running |
+| pp_v8 | + self-monitoring pipeline, 600-step episodes, cube-disturbance ("gentleness") penalty, **continued from pp_v7's 1.2M weights** | +151 → +287 (noisy, net positive) | **70%** (final) | 0% (but 90% now reach+grasp -- 80% grasp-without-lift is the new isolated bottleneck) | **completed full 2M budget, no stall** |
 
 ## pp_v1 — first attempt
 
@@ -278,5 +278,27 @@ checkpoint continuation were all verified working in isolation before launch. Te
 against `training/pick_place/runs`. Live dashboard: `training/serve_runs.py` → All Runs → task
 `pick_place` → `pp_v8`.
 
-Status and results: pending first checkpoint (200k steps) and first self-monitoring analysis
-(400k steps).
+**Outcome: completed the full 2,000,000-step budget cleanly -- no stall, no crash.** Final
+checkpoint: 70% pick success (up from the 60% it continued from), 0% place success, reward noisy
+but net positive by the end (+151 to +287 across the last stretch). Five self-monitoring analyses
+ran automatically (400k/800k/1.2M/1.6M/2.0M steps) and none flagged a stall.
+
+The final trajectory-based behavior analysis (`runs/pp_v8/analysis_2000010.md`) is the most
+specific diagnosis this task has had: of episodes that enter the box (100%) and approach the cube
+(100%), only 10% reach without ever grasping -- reach and grasp both look essentially solved now.
+But **80% grasp the cube and then never lift it.** That's the clearly isolated next bottleneck,
+not "still 0% place" in the abstract -- mirrors how the bin-picking task's v11 isolated grasping
+as the frontier only after reach was decisively solved. `mean_min_ee_to_cube_dist` down to 0.024m,
+`stuck_at_collision_fraction` down to 20% (from 30% at 1.2M) -- both trending the right direction.
+`entropy` went negative (differential entropy of a Gaussian policy at std=0.217 is mathematically
+expected to be negative at that tight a distribution, not a bug) -- exploration has collapsed
+substantially by 2M steps, worth factoring into whatever comes next (more training at this
+entropy level may not explore enough to discover a fix on its own).
+
+`fps`/`eta_seconds` stayed blank throughout this run's own logs, as expected -- the fix
+(`AUTOMATED_TRAINING_GUIDE.md` §5) was made while pp_v8 was already running in memory with the old
+code; it will take effect starting with the next launched run.
+
+Per standing instruction, no further run has been launched -- see `HANDOFF.md`/`EXPERIMENTS.md`
+for what a next iteration (targeting the grasp-without-lift bottleneck specifically) should
+consider.
