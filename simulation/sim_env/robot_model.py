@@ -8,7 +8,7 @@ from __future__ import annotations
 import mujoco
 import numpy as np
 
-ARM_JOINT_SUFFIXES = ("shoulder_pitch_joint", "shoulder_roll_joint", "elbow_joint")
+ARM_JOINT_SUFFIXES = ("shoulder_yaw_joint", "shoulder_pitch_joint", "shoulder_roll_joint", "elbow_joint")
 
 
 def arm_joint_names(side: str) -> list[str]:

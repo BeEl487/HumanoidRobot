@@ -20,3 +20,23 @@
 *.rm
 *.rmvb
 *.divx
+
+# Generated training artifacts: retain only an explicitly selected final/best model.
+# This keeps source/configuration in the repository while preventing run outputs,
+# checkpoints, logs, videos, and trajectories from being accidentally committed.
+simulation/training/**/runs/**
+!simulation/training/**/runs/
+!simulation/training/**/runs/**/
+!simulation/training/**/runs/**/checkpoints/
+!simulation/training/**/runs/**/checkpoints/final.zip
+!simulation/training/**/runs/**/checkpoints/best.zip
+!simulation/training/**/runs/**/checkpoints/best_model.zip
+!simulation/training/**/runs/**/checkpoints/model_best.zip
+!simulation/training/**/runs/**/checkpoints/best.pt
+!simulation/training/**/runs/**/checkpoints/best.pth
+
+# Python and TensorBoard runtime outputs.
+__pycache__/
+*.py[cod]
+*.tfevents.*
+*.log

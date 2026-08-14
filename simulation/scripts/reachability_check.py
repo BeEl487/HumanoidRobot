@@ -37,19 +37,20 @@ GATE_FRACTION = 0.80
 def _build_arm_chain(side: str) -> tuple[Chain, list[bool]]:
     elems = [
         "base_link", "base_to_torso", "torso_link",
+        f"{side}_shoulder_yaw_joint", f"{side}_shoulder_yaw_link",
         f"{side}_shoulder_pitch_joint", f"{side}_shoulder_link",
         f"{side}_shoulder_roll_joint", f"{side}_upper_arm_link",
         f"{side}_elbow_joint", f"{side}_forearm_link",
         f"{side}_ee_mount_joint", f"{side}_ee_mount_link",
     ]
-    # active_links_mask must be True only for the 3 real revolute arm joints -- the fixed joints
+    # active_links_mask must be True only for the 4 real revolute arm joints -- the fixed joints
     # in the chain (base_to_torso, ee_mount_joint) and anything ikpy auto-appends past the
     # requested end link (the gripper) must stay inactive, or the IK solver "explores" DOFs that
     # either contribute nothing (fixed joints) or aren't part of what this check is measuring.
     chain = Chain.from_urdf_file(str(URDF_PATH), base_elements=elems)
     mask = [False] * len(chain.links)
     for i, link in enumerate(chain.links):
-        if link.name in (f"{side}_shoulder_pitch_joint", f"{side}_shoulder_roll_joint", f"{side}_elbow_joint"):
+        if link.name in (f"{side}_shoulder_yaw_joint", f"{side}_shoulder_pitch_joint", f"{side}_shoulder_roll_joint", f"{side}_elbow_joint"):
             mask[i] = True
     chain.active_links_mask = mask
     return chain, mask

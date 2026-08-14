@@ -63,8 +63,12 @@ def _quat_conj(q: np.ndarray) -> np.ndarray:
 class SuctionPickPlaceEnv(gym.Env):
     metadata = {"render_modes": []}
 
-    def __init__(self, config_path: pathlib.Path = ENV_CONFIG_PATH, eval_mode: bool = False):
+    def __init__(
+        self, config_path: pathlib.Path = ENV_CONFIG_PATH, eval_mode: bool = False,
+        enable_camera_occlusion_penalty: bool = False,
+    ):
         super().__init__()
+        self.enable_camera_occlusion_penalty = enable_camera_occlusion_penalty
         with open(config_path, encoding="utf-8") as f:
             self.cfg = yaml.safe_load(f)
         with open(SCENE_CONFIG_PATH, encoding="utf-8") as f:
@@ -133,6 +137,14 @@ class SuctionPickPlaceEnv(gym.Env):
         self._object_geom_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, "object_0_collision")
         self._object_dofadr = self.model.joint("object_0_freejoint").dofadr[0]
         self._eq_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_EQUALITY, f"{self.side}_suction_weld")
+        # Camera is rigidly fixed to torso_link (no gimbal -- ASSUMPTIONS.md meta-assumption M1),
+        # so its world position never changes once the model is built; resolved once here rather
+        # than re-read every step. Only used when enable_camera_occlusion_penalty is set (the
+        # RGB-D camera task), since the state-only pick_place task has no camera to occlude.
+        if self.enable_camera_occlusion_penalty:
+            cam_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_CAMERA, "head_camera")
+            mujoco.mj_forward(self.model, self.data)
+            self._camera_pos = self.data.cam_xpos[cam_id].copy()
 
         arm_link_geom_names = [f"{self.side}_upper_arm_collision", f"{self.side}_forearm_collision"]
         self._arm_link_geom_ids = {
@@ -175,17 +187,41 @@ class SuctionPickPlaceEnv(gym.Env):
         reset()."""
         self.cfg.setdefault("curriculum", {})["start_attached_prob"] = prob
 
+    def _camera_occlusion_penalty(self, ee_pos: np.ndarray, cube_pos: np.ndarray) -> float:
+        """Penalizes the end effector for sitting in the camera's direct line of sight to the
+        cube during approach -- the RGB-D policy otherwise has no incentive to prefer an angled
+        approach over driving straight down the camera's centerline, which blinds its own vision
+        right when it matters most. Geometrically: project ee_pos onto the camera->cube segment;
+        if the projection falls strictly between the two (t in (0.05, 0.85) -- excluding both the
+        camera's immediate vicinity and the final few cm of approach, where the hand is *supposed*
+        to be near the cube) and the perpendicular distance from that segment is small, the hand is
+        judged to be blocking the view. Gated by enable_camera_occlusion_penalty (camera task only,
+        see ASSUMPTIONS.md) since the state-only pick_place task's camera is unused/irrelevant."""
+        to_cube = cube_pos - self._camera_pos
+        dist_to_cube = np.linalg.norm(to_cube)
+        if dist_to_cube < 1e-6:
+            return 0.0
+        to_ee = ee_pos - self._camera_pos
+        t = float(np.dot(to_ee, to_cube) / (dist_to_cube * dist_to_cube))
+        if not (0.05 < t < 0.85):
+            return 0.0
+        perp_dist = np.linalg.norm(to_ee - t * to_cube)
+        radius = self.cfg["reward"]["camera_occlusion_radius_m"]
+        if perp_dist < radius:
+            return self.cfg["reward"]["camera_occlusion_penalty"]
+        return 0.0
+
     def _ready_pose(self) -> np.ndarray:
         pose = self.cfg["ready_pose_rad"]
-        return np.array([pose["shoulder_pitch"], pose["shoulder_roll"], pose["elbow"]])
+        return np.array([pose["shoulder_yaw"], pose["shoulder_pitch"], pose["shoulder_roll"], pose["elbow"]])
 
     def _mid_carry_pose(self) -> np.ndarray:
         pose = self.cfg["curriculum"]["mid_carry_pose_rad"]
-        return np.array([pose["shoulder_pitch"], pose["shoulder_roll"], pose["elbow"]])
+        return np.array([pose["shoulder_yaw"], pose["shoulder_pitch"], pose["shoulder_roll"], pose["elbow"]])
 
     def _near_dest_pose(self) -> np.ndarray:
         pose = self.cfg["curriculum"]["near_dest_pose_rad"]
-        return np.array([pose["shoulder_pitch"], pose["shoulder_roll"], pose["elbow"]])
+        return np.array([pose["shoulder_yaw"], pose["shoulder_pitch"], pose["shoulder_roll"], pose["elbow"]])
 
     def _apply_ready_pose(self) -> None:
         self.data.qpos[self._arm_qposadr] = self._ready_pose()
@@ -361,8 +397,9 @@ class SuctionPickPlaceEnv(gym.Env):
 
     def step(self, action: np.ndarray):
         action = np.asarray(action, dtype=np.float64)
-        arm_target = self._normalized_to_arm_target(action[:3])
-        suction_cmd_on = bool(action[3] > self.cfg["suction"]["activation_threshold"])
+        n_arm = len(self._arm_joint_names)
+        arm_target = self._normalized_to_arm_target(action[:n_arm])
+        suction_cmd_on = bool(action[n_arm] > self.cfg["suction"]["activation_threshold"])
 
         dt = self.model.opt.timestep
         for _ in range(self.n_substeps):
@@ -381,9 +418,9 @@ class SuctionPickPlaceEnv(gym.Env):
         just_released_early = False
 
         if not was_attached:
-            suction_cmd_on = float(action[3]) > self.cfg["suction"]["activation_threshold"]
+            suction_cmd_on = float(action[n_arm]) > self.cfg["suction"]["activation_threshold"]
         else:
-            suction_cmd_on = float(action[3]) > self.cfg["suction"]["deactivation_threshold"]
+            suction_cmd_on = float(action[n_arm]) > self.cfg["suction"]["deactivation_threshold"]
         self._suction_cmd_on = suction_cmd_on
 
         # pp_v9 -> pp_v10: two-part chatter fix. User observed (and pick_place_rewards.py's reward
@@ -472,6 +509,9 @@ class SuctionPickPlaceEnv(gym.Env):
         self._prev_action = action
         self._prev_carry_dist = carry_dist
         self._prev_height = height_above_table
+
+        if self.enable_camera_occlusion_penalty and not self._is_attached:
+            reward += self._camera_occlusion_penalty(ee_pos, cube_pos)
 
         terminated = False
         truncated = False

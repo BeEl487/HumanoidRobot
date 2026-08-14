@@ -58,6 +58,8 @@ worth knowing: checkpoint continuation currently carries over network weights on
 environment/curriculum runtime state. A future improvement could persist+restore the anneal
 progress too if that turns out to matter.
 
+| 27 | pp_v27 | **none (fresh init -- pp_v26's checkpoint is action-space-incompatible)** | unchanged (ent_coef 0.003, n_envs 16) | unchanged | **`humanoid.urdf` arm model changed: added `shoulder_yaw_joint` (4th arm joint, rotation about vertical, innermost), so action space grew 4→5 dims** | unchanged (start_attached/carrying probs) | in progress | in progress | in progress | Launched. Not a reward/curriculum experiment -- a robot-model change (user-requested: arm couldn't pivot out of the head camera's FOV with only pitch/roll/elbow). Surfaced and fixed a real self-collision bug in the new joint's proxy geometry (see `docs/ASSUMPTIONS.md` "Arms" table) before launching. pp_v26's 70%/60% pick/place result stands as the 3-DOF-arm reference, not invalidated, just superseded. |
+
 ## How to add a new row
 
 Before launching a new experiment, per the automation guide's §7 requirement: write the row's

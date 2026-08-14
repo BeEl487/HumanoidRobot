@@ -1,0 +1,44 @@
+# First RGB-D PPO baseline. Source/destination positions are visible only in the camera image.
+#
+# rgbd_pp_v1 (2026-08-08) ran single-env (DummyVecEnv, n_envs=1) at ~7-8 fps -- CPU-bound
+# software MuJoCo rendering per step, no shared GPU context -- and was killed (terminal/session
+# closed, not a code crash: log ends mid-stream with no traceback, error.log is empty) at step
+# 24064/2000000, before ever reaching eval_freq=200000, so it produced zero checkpoints/videos.
+# n_envs now parallelizes rendering across worker processes (see train_rgbd_pick_place.py
+# make_env/SubprocVecEnv); eval/video/analysis cadence lowered accordingly so artifacts actually
+# appear at a visible cadence instead of requiring ~7 hours of uninterrupted uptime for the first one.
+n_envs: 6
+total_timesteps: 2000000
+log_freq: 5000
+eval_freq: 20000
+analysis_freq: 60000
+stall_window_steps: 45000
+n_eval_episodes: 10
+video_freq: 20000
+learning_rate: 0.0003
+n_steps: 128
+batch_size: 64
+# Was 0.003. Raised for rgbd_pp_v9's fresh init (2026-08-13) after v6-v8's continuation lineage
+# was found saturated: inspecting the policy's raw (pre-clip) Gaussian mean directly showed
+# shoulder_roll's mean at -3.02, over 3 std devs past the [-1,1] action boundary -- effectively
+# 100% of stochastic samples clipped to the same value, zero exploration signal on that dimension,
+# unable to ever discover the correct (opposite-sign) angle for the actual cube position (confirmed
+# reachable via IK). This is vanilla PPO's known Box-action boundary-saturation pathology (loss
+# computed on the unclipped Gaussian, env only ever sees the clipped value, so reward pressure that
+# keeps saying "more negative is better" keeps pushing the mean past the boundary with no feedback
+# that it stopped mattering) -- baked into network weights, so continuing the same lineage further
+# cannot self-recover, only a fresh init can. Raising ent_coef increases entropy pressure toward
+# higher std, which puts the boundary fewer std-devs away and gives more samples a chance to escape
+# and provide gradient signal -- a mitigation, not a complete fix (entropy only affects std, not
+# mean location). If saturation recurs even at this value, the real fix is a squashed
+# (tanh-bounded) policy distribution instead of vanilla clipped Gaussian, not a further ent_coef
+# bump. Also watch for the OPPOSITE failure (pick_place's own history found ent_coef=0.01 caused
+# entropy runaway/noisy non-convergence on a simpler state-only observation) -- monitor and revert
+# toward 0.003-0.01 if this run shows runaway rather than escaping saturation.
+ent_coef: 0.015
+features_dim: 128
+device: auto
+policy_kwargs:
+  net_arch:
+    pi: [128, 128]
+    vf: [128, 128]

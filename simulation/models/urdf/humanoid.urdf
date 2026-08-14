@@ -46,9 +46,18 @@
   <!--
     ============================================================================================
     ARMS — the only moving subsystem in this simulation (the torso gimbal is permanently out of
-    scope, see ASSUMPTIONS.md meta-assumption M1). Both arms are identical 3-DOF serial chains:
-    shoulder_pitch -> shoulder_roll (abduction) -> elbow_flexion -> ee_mount (fixed attach frame
-    reserved for Milestone 3's gripper).
+    scope, see ASSUMPTIONS.md meta-assumption M1). Both arms are identical 4-DOF serial chains:
+    shoulder_yaw (azimuth) -> shoulder_pitch -> shoulder_roll (abduction) -> elbow_flexion ->
+    ee_mount (fixed attach frame reserved for Milestone 3's gripper).
+
+    shoulder_yaw added post-Milestone (2026-08-11): the 3-DOF pitch/roll/elbow chain gave the
+    upper arm full elevation/azimuth *within the sagittal+frontal planes centered on the shoulder
+    mount*, but no way to rotate that whole plane around the vertical axis independent of
+    pitch — so the arm/forearm could not be swung fully sideways/behind the shoulder line and out
+    of the front-mounted head camera's FOV without fighting the pitch/roll coupling. shoulder_yaw
+    is the innermost joint (parent = torso_link directly), so it re-orients the entire downstream
+    pitch/roll/elbow chain as a rigid unit — the "turret" DOF a real 3-DOF-shoulder humanoid/robot
+    arm needs for full orientation freedom of the upper arm.
 
     Rest-pose convention (all joint angles = 0): arms hang straight down from the shoulder,
     fully extended (elbow straight) — the standard "arms at ease" humanoid rest pose. This keeps
@@ -57,13 +66,15 @@
     spinning it uselessly about its own long axis (see build notes / ASSUMPTIONS.md for why an
     "arms forward" rest pose was considered and rejected).
 
-    Axes: shoulder_pitch rotates about the lateral (Y) axis (swings the arm forward/back in the
-    sagittal plane). shoulder_roll rotates about the fore-aft (X) axis (abduction, swings the arm
-    sideways) — mirrored in sign between left/right (left: +X, right: -X) so that a POSITIVE
-    shoulder_roll command means "raise the arm away from the body" on both sides symmetrically.
-    elbow_flexion rotates about Y again (hinge, 0 = straight, positive = curling the forearm
-    toward the upper arm). All of this is a sim-only convention — ARCHITECTURE.md §9 lists the
-    real robot's sign convention as unconfirmed; this pre-answers it for simulation purposes only.
+    Axes: shoulder_yaw rotates about the vertical (Z) axis (swings the whole arm's sagittal/
+    frontal reference plane around the torso, azimuth). shoulder_pitch rotates about the lateral
+    (Y) axis (swings the arm forward/back in the sagittal plane, as re-oriented by yaw).
+    shoulder_roll rotates about the fore-aft (X) axis (abduction, swings the arm sideways) —
+    mirrored in sign between left/right (left: +X, right: -X) so that a POSITIVE shoulder_roll
+    command means "raise the arm away from the body" on both sides symmetrically. elbow_flexion
+    rotates about Y again (hinge, 0 = straight, positive = curling the forearm toward the upper
+    arm). All of this is a sim-only convention — ARCHITECTURE.md §9 lists the real robot's sign
+    convention as unconfirmed; this pre-answers it for simulation purposes only.
 
     Dimensions grounded against Poppy Torso (github.com/poppy-project/poppy-torso), an
     open-source 3D-printed 2-arm research robot of comparable scale/purpose — see ASSUMPTIONS.md
@@ -73,15 +84,28 @@
 
   <!-- ===== LEFT ARM ===== -->
 
+  <link name="left_shoulder_yaw_link">
+    <collision name="left_shoulder_yaw_actuator_collision">
+      <geometry><box size="0.025 0.025 0.025"/></geometry>
+    </collision>
+  </link>
+  <joint name="left_shoulder_yaw_joint" type="revolute">
+    <parent link="torso_link"/>
+    <child link="left_shoulder_yaw_link"/>
+    <origin xyz="0 0.11 0.05" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-1.5708" upper="1.5708" effort="3.0" velocity="2.0944"/>
+  </joint>
+
   <link name="left_shoulder_link">
     <collision name="left_shoulder_actuator_collision">
       <geometry><box size="0.025 0.025 0.025"/></geometry>
     </collision>
   </link>
   <joint name="left_shoulder_pitch_joint" type="revolute">
-    <parent link="torso_link"/>
+    <parent link="left_shoulder_yaw_link"/>
     <child link="left_shoulder_link"/>
-    <origin xyz="0 0.11 0.05" rpy="0 0 0"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
     <axis xyz="0 1 0"/>
     <limit lower="-2.0944" upper="2.7053" effort="3.0" velocity="2.0944"/>
   </joint>
@@ -183,15 +207,28 @@
 
   <!-- ===== RIGHT ARM (mirror of left about the torso's XZ plane) ===== -->
 
+  <link name="right_shoulder_yaw_link">
+    <collision name="right_shoulder_yaw_actuator_collision">
+      <geometry><box size="0.025 0.025 0.025"/></geometry>
+    </collision>
+  </link>
+  <joint name="right_shoulder_yaw_joint" type="revolute">
+    <parent link="torso_link"/>
+    <child link="right_shoulder_yaw_link"/>
+    <origin xyz="0 -0.11 0.05" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-1.5708" upper="1.5708" effort="3.0" velocity="2.0944"/>
+  </joint>
+
   <link name="right_shoulder_link">
     <collision name="right_shoulder_actuator_collision">
       <geometry><box size="0.025 0.025 0.025"/></geometry>
     </collision>
   </link>
   <joint name="right_shoulder_pitch_joint" type="revolute">
-    <parent link="torso_link"/>
+    <parent link="right_shoulder_yaw_link"/>
     <child link="right_shoulder_link"/>
-    <origin xyz="0 -0.11 0.05" rpy="0 0 0"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
     <axis xyz="0 1 0"/>
     <limit lower="-2.0944" upper="2.7053" effort="3.0" velocity="2.0944"/>
   </joint>

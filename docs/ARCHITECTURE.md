@@ -30,12 +30,20 @@ off-device, deploy trained policies back onto the robot for on-device inference.
   linkage/yoke with backlash or non-1:1 mechanical advantage is in the loop).
 
 ### Arms
-- Two arms (left/right), **3 actuators each**:
+- Two arms (left/right), **3 actuators each** (real hardware, unchanged):
   1. Shoulder pitch
   2. Shoulder roll / abduction
   3. Elbow flexion
 - No wrist joint, no gripper/hand yet — arms currently terminate at the elbow. End effectors are
   future work.
+- **Simulation-only divergence (2026-08-11):** `simulation/models/urdf/humanoid.urdf` now models a
+  4th joint, shoulder yaw (rotation about vertical, innermost joint per arm), added so a trained
+  policy can pivot the arm out of the head camera's field of view — see
+  `simulation/docs/ASSUMPTIONS.md` "Arms" table for the full rationale. **This has not been added
+  to the real robot.** No 7th/8th arm ODrive Mini has been sourced, mounted, or wired; the
+  actuator count below is still accurate for the physical build. Treat the sim's 4-DOF arm as a
+  standing open question ("should the real robot get a shoulder yaw actuator too?"), not a decision
+  already made — revisit deliberately if/when hardware work on the arms resumes.
 
 ### Actuator count
 - 6 arm ODrive Minis (3 × 2 arms) + 2 gimbal ODrive Minis = **8 ODrive Minis total**
@@ -156,6 +164,12 @@ off-device, deploy trained policies back onto the robot for on-device inference.
 - Camera setup: **not decided yet.** Open question — count, type (mono/stereo/depth), and
   mounting (head-only vs. multi-view) all still need deciding. Whatever is chosen needs to match
   what the confirmed Jetson model can actually interface (CSI lanes vs. USB3).
+- **Simulation-only pivot (2026-08-13):** the RGB-D sim task's camera moved from a torso-mounted
+  "head camera" convention to an external, stationary, workspace-side camera looking back at the
+  robot (see `simulation/docs/ASSUMPTIONS.md` "Camera" table for the full rationale — it fixed a
+  reward-conflict/occlusion problem during approach). **This does not resolve the open mounting
+  question above** — if anything it adds a new option (external fixed camera vs. robot-mounted) to
+  weigh once real hardware camera decisions are made. Don't assume the sim's convention transfers.
 
 ## 8. Software / AI plan
 

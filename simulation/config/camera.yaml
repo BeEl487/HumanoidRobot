@@ -1,18 +1,41 @@
-# Head-equivalent RGB camera. No camera has been chosen for the real robot, and no head/neck
-# link exists in the architecture at all (the torso is the topmost body segment) — this is a
-# realistic placeholder spec, fixed rigidly to the top-front of the torso so it co-moves with the
-# torso the way a head-mounted camera would. See simulation/docs/ASSUMPTIONS.md "Camera" table.
-
+# RGB camera for the suction pick-place / RGB-D task. No camera has been chosen for the real
+# robot, and no head/neck link exists in the architecture at all (the torso is the topmost body
+# segment) — this is a realistic placeholder spec. See simulation/docs/ASSUMPTIONS.md "Camera" table.
+#
+# 2026-08-13 PIVOT: was a torso-mounted "head camera" (co-moving with the robot, looking forward
+# over its own shoulder at the workspace). Moved to an external, stationary camera on the opposite
+# side of the table from the robot, looking back across the boxes toward the robot -- because with
+# the robot's own hand approaching the box from its own side, a robot-mounted forward-looking
+# camera has the hand directly between itself and the cube during approach (confirmed: policy
+# oscillated near-but-not-touching the cube, root-caused to the camera_occlusion_penalty reward
+# term fighting the close-approach term whenever the only reachable approach path crossed the
+# camera's sightline). With the camera across the table, the cube sits in the foreground and the
+# approaching arm is behind it from the camera's view for almost the entire approach -- occlusion
+# becomes structural rather than something the reward has to teach against.
+# Implementation note: still attached to torso_link in the MJCF (simplest -- no new body needed),
+# which is equivalent to a true world-fixed camera ONLY because the robot's base never moves in
+# this sim (no gimbal/locomotion, ASSUMPTIONS.md meta-assumption M1); this is NOT free-standing
+# hardware and does not imply a real fixed-workspace-camera decision has been made -- see
+# docs/ARCHITECTURE.md "Camera" section for that flag, same pattern as the shoulder_yaw DOF pivot.
 name: head_camera
 
 # Mount offset from torso_link origin (m), in the torso's local frame (X=forward, Y=left, Z=up).
-# z raised to 0.15 (torso top edge, was 0.13) as part of the coverage fix below.
-mount_pos: [0.07, 0.0, 0.15]
+# World-space target: X~0.45 (just beyond the table's far edge at X=0.385, table center_xy[0]=0.205
+# + top_size_xy[0]/2=0.18), Y=-0.12 (midpoint between the source box Y=0.02 and destination box
+# Y=-0.26), Z~1.05 (same absolute height as the old head-camera position). torso_link's own world
+# origin is (0,0,0.90) (MOUNT_HEIGHT_M in scripts/reachability_check.py), so local = world - that.
+mount_pos: [0.45, -0.12, 0.15]
 
-# Downward pitch from horizontal (deg) — angles the camera toward the workspace in front of the
-# robot rather than the horizon. Was 30.0; steepened to 55.0 -- see horizontal_fov_deg comment,
-# this and the FOV widening were tuned together against scripts/check_camera_coverage.py.
-pitch_down_deg: 55.0
+# Heading (deg) about vertical, 0 = torso-forward/+X (the old head-camera convention), 180 = facing
+# back toward the robot -- what the opposite-side placement above needs.
+yaw_deg: 180.0
+
+# Downward pitch from horizontal (deg) — angles the camera down at the boxes. Computed from the
+# new geometry: horizontal distance from camera to box center (~0.29m in X) vs. vertical drop to
+# box height (~0.23m) gives atan2(0.23,0.29)=38.5 deg; 42 gives a small margin toward framing the
+# nearer parts of the source box's spawn range too. Re-verify against a coverage check if the box
+# positions or camera mount ever change (same discipline as the FOV widening below).
+pitch_down_deg: 42.0
 
 # Horizontal field of view (deg). Was 58.0 (representative of a narrow commodity module) until
 # scripts/check_camera_coverage.py caught that the camera, mounted this close to the workspace

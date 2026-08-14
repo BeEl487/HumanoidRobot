@@ -90,7 +90,7 @@ class BinPickingEnv(gym.Env):
 
     def _ready_pose(self) -> np.ndarray:
         pose = self.cfg["ready_pose_rad"]
-        one_arm = np.array([pose["shoulder_pitch"], pose["shoulder_roll"], pose["elbow"]])
+        one_arm = np.array([pose["shoulder_yaw"], pose["shoulder_pitch"], pose["shoulder_roll"], pose["elbow"]])
         return np.tile(one_arm, self.n_arms)
 
     def _apply_ready_pose(self) -> None:

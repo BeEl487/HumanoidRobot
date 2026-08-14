@@ -6,9 +6,11 @@
 # The gimbal is permanently out of scope for this simulation (ASSUMPTIONS.md meta-assumption
 # M1) — the arms are the entire actuated joint set.
 joint_order:
+  - left_shoulder_yaw_joint
   - left_shoulder_pitch_joint
   - left_shoulder_roll_joint
   - left_elbow_joint
+  - right_shoulder_yaw_joint
   - right_shoulder_pitch_joint
   - right_shoulder_roll_joint
   - right_elbow_joint

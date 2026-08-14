@@ -1143,4 +1143,87 @@ honestly: the raw place number (60%) is slightly below pp_v24's peak (73%), but 
 efficiency improved -- this reads as normal PPO noise around a genuinely high plateau (40-73% place
 across pp_v24-v25's later checkpoints), not a regression. The 100% lift-given-attach rate -- the
 single most important confirmed result of this whole investigation -- has now held at every
+
+## pp_v26 → pp_v27: shoulder_yaw DOF added (fresh init, not a continuation)
+
+Not a reward/curriculum experiment -- the robot model itself changed. `humanoid.urdf` gained a 4th
+arm joint, `shoulder_yaw` (rotation about vertical, innermost per-arm joint, parent=torso_link),
+added because the arm couldn't pivot out of the head camera's field of view with only
+pitch/roll/elbow (user-requested, motivated by the camera_pick_place RGB-D task). Action space grew
+3 arm + 1 suction -> 4 arm + 1 suction (5 total); `pp_v26`'s `checkpoints/final.zip` is therefore
+**not loadable as an init-checkpoint** (action/observation shape mismatch) -- pp_v27 is a fresh
+random init, not a continuation. pp_v26's result (place 0.70, 100% lift-given-attach, robustly
+confirmed across three runs) is not invalidated or lost, just superseded by the arm model change;
+it remains the reference result for the 3-DOF arm if that ever matters again.
+
+Building the new joint surfaced and fixed a real self-collision bug (not present in pp_v26's
+model): the new joint's actuator-lump proxy geometry interpenetrated `upper_arm_link` by ~1cm at
+rest (MuJoCo only auto-excludes contact between *directly adjacent* body pairs, and the new joint
+sits one link further out than that), which was strong enough to hold shoulder_pitch/roll near
+zero regardless of commanded target. Fixed via an explicit contact exclude in `build_model.py`;
+verified via `rollout_smoke_test.py`/`contact_smoke_test.py` returning to their original
+(pre-change) tolerances after the fix, not just passing under loosened ones -- see
+`simulation/docs/ASSUMPTIONS.md` "Arms" table for the full writeup. All curriculum poses
+(`ready_pose_rad`, `mid_carry_pose_rad`, `near_dest_pose_rad`) reproduce their exact pre-change
+end-effector positions at `shoulder_yaw: 0.0`, so the curriculum itself needed no re-solving.
+
+**pp_v27**: launched fresh (2M-step budget, same hyperparameters as pp_v22-26: `ent_coef: 0.003`,
+`n_envs: 16`, curriculum probabilities `start_attached_prob`/`start_carrying_prob` unchanged).
+Watch for whether the extra DOF makes exploration harder (larger action space, same entropy
+coefficient) before assuming any regression is a real problem -- compare against pp_v22's own
+fresh-init trajectory (the last fresh-init run under the 3-DOF arm) as the fairest baseline, not
+directly against pp_v26's continuation-lineage numbers.
+
+**Outcome: completed its full 2M budget. Final manifest: success_rate=0.40, pick_success_rate=0.60**
+-- lower than pp_v26's 3-DOF-arm numbers (0.70/0.70), consistent with the predicted-but-unconfirmed
+theory that a larger action space (4 arm joints vs 3, same `ent_coef`) makes exploration harder for
+a fresh init. Not a regression in the reward/curriculum design -- same config as pp_v22-26 --
+purely attributable to the arm-model change. **pp_v28 launched as a continuation** (`--init-checkpoint
+pp_v27/checkpoints/final.zip`) rather than another fresh init, both to give the 4-DOF arm the same
+multi-continuation runway that pp_v22->26 needed to reach its plateau, and because pp_v27's 40/60
+split (pick > place) suggests the approach/attach stage is already reasonably solved and place
+accuracy is what continuation should improve, matching the pattern seen in the 3-DOF lineage.
+
+One data point worth tracking, not yet understood: `pp_v27.error.log` recorded 3 (out of ~2M
+steps) MuJoCo `WARNING: Nan, Inf or huge value in QACC at DOF 6` messages -- DOF 6 is
+`right_shoulder_yaw_joint` (the new joint, on this task's active arm). Investigated before trusting
+the result: a 50-episode x 500-step stress test commanding random bang-bang targets at every joint
+limit simultaneously (including yaw) produced zero instability, and training completed normally
+with a coherent result immediately after each occurrence (not a runaway/crash) -- MuJoCo's own
+warning is non-fatal by design. Read as a rare, self-recovering contact-impulse transient, not a
+structural defect in the new joint -- but the DOF-6 correlation is specific enough to flag here in
+case it recurs at a rate that stops looking incidental.
+
+**Also discovered same evening: the machine went to sleep overnight (AC sleep timeout was 5 hours,
+default Windows "Balanced" power plan) and silently killed both this run's process tree and the
+concurrent `rgbd_pp_v4` camera run** -- `pp_v27` happened to finish its full budget before that
+point (lucky timing, not resilience), `rgbd_pp_v4` did not (see camera_pick_place/HANDOFF.md).
+Fixed at the root: `powercfg /change standby-timeout-ac 0` (and hibernate) disables sleep while on
+AC power, so this shouldn't recur for future multi-hour unattended runs on this machine -- as long
+as it stays on AC power, which is the normal state for a desktop.
+
+**pp_v28: completed its full 2M budget. success_rate=0.70, pick_success_rate=0.70** -- matches
+pp_v26's 3-DOF-arm plateau exactly. Confirms the pp_v27 theory: the 4-DOF arm's larger action space
+made a single fresh init harder to converge, but one continuation was enough to reach the same
+plateau the 3-DOF lineage needed several continuations for. No config changes between v27->v28.
+This is a reasonable stopping point for this lineage, same reasoning as pp_v26's session checkpoint.
+
+## camera_occlusion_penalty added to shared reward (2026-08-12)
+
+User observed the arm approaching the box head-on, passing directly in front of the RGB-D camera's
+own view of the cube during approach -- verified via ikpy this is NOT a joint-range limitation
+(both boxes solve cleanly at 46-77 deg shoulder_yaw, well inside the +/-90 deg limit; an earlier
+"90 deg saturated" reading was a bug in the check script -- forgot to subtract `MOUNT_HEIGHT_M`
+when converting the target to the IK chain's local frame). The angled approach is kinematically
+available; the policy just had no incentive to prefer it. Added `camera_occlusion_penalty` to
+`config/pick_place_env.yaml` (per-step, pre-attach only): projects the end effector onto the
+camera->cube sightline and penalizes if it falls in the middle of that segment within
+`camera_occlusion_radius_m` (0.06m). Gated behind a new `enable_camera_occlusion_penalty`
+constructor flag on `SuctionPickPlaceEnv`, on only for the camera task
+(`train_rgbd_pick_place.py`/`rgbd_automation.py`) -- **pick_place's own training is unaffected by
+design**, since its camera is unused. Verified with three scripted geometry cases (directly
+blocking / offset to the side / near the cube during final approach) before restarting
+`rgbd_pp_v5` -> `rgbd_pp_v6` (see camera_pick_place/HANDOFF.md for the camera-task-side record).
+
+single most important confirmed result of this whole investigation -- has now held at every
 diagnostic checked across two full runs (pp_v24, pp_v25) and never once broken.

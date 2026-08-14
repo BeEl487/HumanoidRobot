@@ -49,6 +49,7 @@ GEOM_DENSITIES: dict[str, float] = {
     "torso_collision": 550.0,  # lumped frame+battery+electronics density, backed out from a target mass guess
 }
 for _side in ("left", "right"):
+    GEOM_DENSITIES[f"{_side}_shoulder_yaw_actuator_collision"] = _ACTUATOR_LUMP_DENSITY
     GEOM_DENSITIES[f"{_side}_shoulder_actuator_collision"] = _ACTUATOR_LUMP_DENSITY
     GEOM_DENSITIES[f"{_side}_shoulder_roll_actuator_collision"] = _ACTUATOR_LUMP_DENSITY
     GEOM_DENSITIES[f"{_side}_upper_arm_collision"] = _ARM_LINK_DENSITY
@@ -186,12 +187,18 @@ def _add_head_camera(scene: mujoco.MjSpec) -> None:
     fovy = hfov_to_fovy(cfg["horizontal_fov_deg"], width, height)
 
     # xyaxes: camera X (right) and Y (up) axes, expressed in the parent (torso) frame. Derived
-    # from a view direction of (cos(pitch), 0, -sin(pitch)) -- forward, tilted down by
-    # pitch_down_deg -- via right = viewdir x world_up, up = right x viewdir. MuJoCo's camera
-    # looks along its own -Z, so Z_cam = X_cam x Y_cam must equal -viewdir (verified numerically
-    # in camera_smoke_test.py by checking the rendered scene is actually framed sensibly).
+    # from a view direction of (cos(pitch)*cos(yaw), cos(pitch)*sin(yaw), -sin(pitch)) -- horizontal
+    # heading yaw_deg (0 = torso-forward/+X, matching the original robot-head-camera convention;
+    # 180 = facing back toward the robot, used by the opposite-side-of-table placement, see
+    # ASSUMPTIONS.md "Camera" table), tilted down by pitch_down_deg -- via right = viewdir x
+    # world_up, up = right x viewdir. MuJoCo's camera looks along its own -Z, so
+    # Z_cam = X_cam x Y_cam must equal -viewdir (verified numerically in camera_smoke_test.py by
+    # checking the rendered scene is actually framed sensibly).
     pitch = math.radians(cfg["pitch_down_deg"])
-    view_dir = np.array([math.cos(pitch), 0.0, -math.sin(pitch)])
+    yaw = math.radians(cfg.get("yaw_deg", 0.0))
+    view_dir = np.array([
+        math.cos(pitch) * math.cos(yaw), math.cos(pitch) * math.sin(yaw), -math.sin(pitch),
+    ])
     world_up = np.array([0.0, 0.0, 1.0])
     right = np.cross(view_dir, world_up)
     right /= np.linalg.norm(right)
@@ -499,6 +506,18 @@ def build_spec(
 
     for side in ("left", "right"):
         _add_gripper_mimic_constraint(scene, side)
+        # shoulder_yaw_link's actuator-lump proxy geom (a plain 0.025 m box, standing in for an
+        # ODrive Mini, not real robot geometry -- see GEOM_DENSITIES) sits at the same shoulder
+        # mount point the pitch/roll/upper-arm cluster already packs tightly. MuJoCo auto-excludes
+        # contact between direct parent/child body pairs (yaw_link vs shoulder_link never
+        # collide), but shoulder_yaw_link and upper_arm_link are two joints apart, so without this
+        # explicit exclude they interpenetrate ~1 cm at rest -- confirmed via data.contact -- and
+        # the resulting repulsion force overwhelms the pitch/roll position actuators (measured:
+        # pitch/roll stuck within ~1 deg of 0 under a 10 deg step command that used to settle
+        # cleanly). Excluding here matches the same "these are non-physical actuator-lump proxies,
+        # not real self-collision surfaces" reasoning already implicit in every other adjacent-body
+        # exclusion in this design.
+        scene.add_exclude(bodyname1=f"{side}_shoulder_yaw_link", bodyname2=f"{side}_upper_arm_link")
 
     _add_head_camera(scene)
 

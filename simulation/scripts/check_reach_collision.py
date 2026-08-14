@@ -56,7 +56,7 @@ def _solve(chain, mask, target_local: np.ndarray) -> tuple[float, list[float]]:
 
 
 def _set_arm(model: mujoco.MjModel, data: mujoco.MjData, side: str, angles: list[float]) -> None:
-    names = [f"{side}_shoulder_pitch_joint", f"{side}_shoulder_roll_joint", f"{side}_elbow_joint"]
+    names = [f"{side}_shoulder_yaw_joint", f"{side}_shoulder_pitch_joint", f"{side}_shoulder_roll_joint", f"{side}_elbow_joint"]
     data.qpos[:] = 0
     for n, a in zip(names, angles):
         data.qpos[model.joint(n).qposadr[0]] = a
