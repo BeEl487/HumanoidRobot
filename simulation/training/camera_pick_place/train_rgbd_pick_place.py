@@ -64,10 +64,29 @@ def build_model(env, seed: int = 0, tensorboard_log: str | None = None) -> PPO:
         batch_size=cfg["batch_size"],
         ent_coef=cfg["ent_coef"],
         device=cfg["device"],
+        # gSDE (use_sde) + squash_output: rgbd_pp_v9-v12 repeatedly saturated -- the raw
+        # (pre-clip) Gaussian mean for shoulder_roll/pitch drifted past the [-1,1] action
+        # boundary (confirmed by direct inspection of model.policy.get_distribution), so nearly
+        # every stochastic sample clipped to the same value with zero executed-action variance,
+        # leaving no gradient signal to fine-tune the last few cm of approach -- exactly the
+        # "gets close, then can't close the gap" behavior observed. Recurred even on v12's
+        # genuinely fresh init, ruling out inherited-optimizer-momentum as the sole cause -- this
+        # task/reward combination has a structural tendency toward it. Vanilla PPO's
+        # DiagGaussianDistribution has no way to avoid this (loss computed on the unclipped
+        # continuous distribution, env only ever executes the clipped value). squash_output only
+        # takes effect with use_sde=True in SB3 (StateDependentNoiseDistribution) -- together they
+        # give a tanh-bounded action with a real gradient everywhere, including near the boundary,
+        # instead of a dead zone past it. Also switches exploration from step-independent Gaussian
+        # noise to gSDE's state-dependent noise (resampled every sde_sample_freq steps) -- smoother,
+        # more physically plausible exploration for continuous robot control, the scenario gSDE was
+        # designed for. Architecture change -- invalidates old checkpoints, requires a fresh init.
+        use_sde=True,
+        sde_sample_freq=4,
         policy_kwargs={
             "features_extractor_class": RGBDProprioExtractor,
             "features_extractor_kwargs": {"features_dim": cfg["features_dim"]},
             "net_arch": cfg["policy_kwargs"]["net_arch"],
+            "squash_output": True,
         },
         tensorboard_log=tensorboard_log,
         verbose=1,

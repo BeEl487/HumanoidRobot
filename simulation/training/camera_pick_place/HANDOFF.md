@@ -81,6 +81,39 @@ pick_place layout exactly) — it just never got to run once.
   artifacts expected around step 20000 (few minutes at current fps), not step 200000.
 - A stall triggers `runs/rgbd_pp_v3/STALL_DETECTED.flag` per the automation contract.
 
+## rgbd_pp_v12 → rgbd_pp_v13: switched to gSDE + squashed policy (2026-08-20)
+
+User reported the arm getting close to the cube, then settling short and staying away instead of
+closing the gap -- traced with the same technique as the earlier saturation bug: stepped
+`ckpt_100020.zip` (v12, a genuinely fresh init, not a continuation) to its settled state (closest
+approach 7.5cm at step 24, drifted back out and stuck at ~9.7cm from step ~45 onward, suction
+commanded on the whole time but never close enough to attach) and inspected
+`model.policy.get_distribution(obs).distribution.mean` directly: `shoulder_roll`'s raw mean was
+**-2.13**, past the [-1,1] boundary, while the IK-correct angle for that exact cube position maps
+to a normalized target of **-0.78** -- comfortably inside the valid range. So the policy has the
+right *direction* but overshoots past where it needs to stop; once execution-clipped to -1, there's
+no way to fine-tune the last bit of precision needed to actually close the final few cm, so it gets
+stuck wherever the clipped combination of joints happens to land.
+
+**This is the same boundary-saturation pathology as v6-v8, recurring on v12's genuinely fresh
+init** -- ruling out "just inherited optimizer momentum" as the whole story from the earlier
+diagnosis. This task/reward combination has a structural tendency to push the policy toward this
+failure, so another restart alone was not going to fix it.
+
+**Real fix this time, not another coefficient/restart cycle**: switched `train_rgbd_pick_place.py`'s
+`build_model()` to `use_sde=True` + `policy_kwargs={"squash_output": True}`. SB3's `squash_output`
+only takes effect combined with `use_sde` (gSDE, State-Dependent Exploration) -- together they
+replace the vanilla hard-clipped `DiagGaussianDistribution` (loss computed on the unclipped
+continuous mean, environment only ever executes the clipped value, zero gradient once saturated)
+with a tanh-bounded action that has a real, non-zero gradient everywhere, including near the
+boundary. Also changes exploration from step-independent Gaussian noise to gSDE's state-dependent
+noise (`sde_sample_freq=4`) -- smoother, more physically plausible exploration for continuous robot
+control, which is what gSDE was designed for. This is an architecture change (invalidates old
+checkpoints), verified with a standalone 200-step build+train smoke test before touching the live
+run. `rgbd_pp_v13` launched as a fresh init. Watch whether `ee_to_cube_dist` actually reaches
+near-zero and attaches this time, not just whether `std`/entropy metrics look reasonable -- those
+were never the actual problem, the clipped-execution gradient dead-zone was.
+
 ## rgbd_pp_v9 → v10 → v11 → v12: reverting ent_coef didn't recover the run (2026-08-19/20)
 
 User reported the current checkpoint looked much worse than the previous run's checkpoint at the
