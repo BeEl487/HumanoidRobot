@@ -1,0 +1,490 @@
+<title>Forward Kinematics</title>
+<style>
+:root{
+  --bg:#f3f2ee; --panel:#ffffff; --ink:#1c1b19; --sub:#6b6459;
+  --line:#d8d4cb; --accent:#c5601f; --joint:#2f6f5e; --elbow:#2f5f8f;
+  --grid:#e4e0d6; --mono: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+  --sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#15140f; --panel:#1d1c16; --ink:#eee8da; --sub:#a39a86;
+    --line:#3a382c; --accent:#e0812f; --joint:#5fbf9f; --elbow:#6ea8e0;
+    --grid:#26241c;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#15140f; --panel:#1d1c16; --ink:#eee8da; --sub:#a39a86;
+  --line:#3a382c; --accent:#e0812f; --joint:#5fbf9f; --elbow:#6ea8e0;
+  --grid:#26241c;
+}
+
+*{box-sizing:border-box;}
+body{
+  margin:0; background:var(--bg); color:var(--ink);
+  font-family:var(--sans); -webkit-font-smoothing:antialiased;
+}
+.wrap{
+  max-width:1180px; margin:0 auto; padding:2rem 1.5rem 3rem;
+  display:flex; flex-direction:column; gap:1.25rem;
+}
+header{ display:flex; flex-direction:column; gap:.35rem; }
+h1{
+  margin:0; font-size:1.5rem; font-weight:650; letter-spacing:-0.01em; text-wrap:balance;
+}
+.sub{ color:var(--sub); font-size:.92rem; max-width:60ch; line-height:1.5; }
+
+.stage{
+  display:grid; grid-template-columns: 1fr 300px; gap:1.25rem;
+}
+@media (max-width: 860px){ .stage{ grid-template-columns: 1fr; } }
+
+.canvas-panel{
+  background:var(--panel); border:1px solid var(--line); border-radius:10px;
+  padding:.75rem; position:relative;
+}
+canvas{ width:100%; height:520px; display:block; border-radius:6px; }
+
+.legend{
+  position:absolute; top:1.15rem; left:1.15rem; display:flex; flex-direction:column; gap:.35rem;
+  font-family:var(--mono); font-size:.72rem; color:var(--sub);
+}
+.legend .row{ display:flex; align-items:center; gap:.5rem; }
+.swatch{ width:.7rem; height:.7rem; border-radius:2px; flex:none; }
+
+.controls{
+  background:var(--panel); border:1px solid var(--line); border-radius:10px;
+  padding:1.1rem 1.15rem; display:flex; flex-direction:column; gap:1.1rem;
+}
+.ctrl-group{ display:flex; flex-direction:column; gap:.4rem; }
+.ctrl-label{
+  display:flex; justify-content:space-between; align-items:baseline;
+  font-size:.78rem; color:var(--sub); text-transform:uppercase; letter-spacing:.06em;
+}
+.ctrl-label .val{
+  font-family:var(--mono); color:var(--ink); font-size:.85rem; text-transform:none;
+  letter-spacing:0; font-variant-numeric:tabular-nums;
+}
+input[type="range"]{
+  -webkit-appearance:none; width:100%; height:4px; border-radius:2px;
+  background:var(--grid); outline:none;
+}
+input[type="range"]::-webkit-slider-thumb{
+  -webkit-appearance:none; width:16px; height:16px; border-radius:50%;
+  background:var(--accent); border:2px solid var(--panel); box-shadow:0 0 0 1px var(--line);
+  cursor:pointer;
+}
+input[type="range"]::-moz-range-thumb{
+  width:14px; height:14px; border-radius:50%; background:var(--accent);
+  border:2px solid var(--panel); box-shadow:0 0 0 1px var(--line); cursor:pointer;
+}
+input[type="range"]:focus-visible::-webkit-slider-thumb{ outline:2px solid var(--elbow); outline-offset:2px; }
+
+.readout{
+  display:grid; grid-template-columns:1fr 1fr; gap:.5rem .75rem;
+  font-family:var(--mono); font-size:.78rem;
+}
+.readout .k{ color:var(--sub); }
+.readout .v{ text-align:right; font-variant-numeric:tabular-nums; }
+.readout .divider{ grid-column:1/-1; height:1px; background:var(--line); margin:.15rem 0; }
+
+.note{
+  font-size:.76rem; color:var(--sub); line-height:1.5; border-top:1px solid var(--line);
+  padding-top:.75rem;
+}
+.note b{ color:var(--ink); font-weight:600; }
+
+button.reset{
+  align-self:flex-start; font-family:var(--mono); font-size:.72rem; color:var(--sub);
+  background:none; border:1px solid var(--line); border-radius:6px; padding:.3rem .6rem;
+  cursor:pointer;
+}
+button.reset:hover{ color:var(--ink); border-color:var(--sub); }
+button.reset:focus-visible{ outline:2px solid var(--elbow); outline-offset:2px; }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>Forward Kinematics</h1>
+    <div class="sub">A closed-loop mechanism: two 120mm bars (each on a universal joint) end in 30mm crank bars whose tips are tied together by a fixed 91mm cross bar; a third (30mm) and fourth (27mm) bar hang off a separate mount with the fourth bar's tip held exactly 42.5mm from the cross bar's midpoint. The two crank angles are the only direct inputs — everything else is solved to satisfy the fixed-length constraints.</div>
+  </header>
+
+  <div class="stage">
+    <div class="canvas-panel">
+      <canvas id="cv" width="1600" height="1560"></canvas>
+      <div class="legend">
+        <div class="row"><span class="swatch" style="background:var(--joint)"></span>120mm bar</div>
+        <div class="row"><span class="swatch" style="background:var(--elbow)"></span>30mm bar</div>
+        <div class="row"><span class="swatch" style="background:#9a4fc5"></span>91mm cross bar</div>
+        <div class="row"><span class="swatch" style="background:#c53f3f"></span>bar C (30mm)</div>
+        <div class="row"><span class="swatch" style="background:#c58f3f"></span>bar D (27mm)</div>
+      </div>
+    </div>
+
+    <div class="controls">
+      <div class="ctrl-group">
+        <div class="ctrl-label"><span>Crank (orig 30mm bar)</span><span class="val" id="crankOrigVal">30.0°</span></div>
+        <input type="range" id="crankOrig" min="-90" max="90" value="30" step="0.5">
+      </div>
+      <div class="ctrl-group">
+        <div class="ctrl-label"><span>Crank (copy 30mm bar)</span><span class="val" id="crankCopyVal">-30.0°</span></div>
+        <input type="range" id="crankCopy" min="-90" max="90" value="-30" step="0.5">
+      </div>
+      <button class="reset" id="resetBtn">reset all</button>
+
+      <div class="readout" id="readout"></div>
+
+      <div class="note">
+        The two 30mm bars' angles are the <b>cranks</b> — the only direct inputs. Bar D is hinged at
+        bar C's tip and rotates about bar C's own local x-axis; both start upright. Bar C and bar D
+        are each clamped to <b>&plusmn;35&deg;</b> of upright. The 120mm bars' universal joint, bar C,
+        and bar D are solved each frame to best satisfy bar D's tip staying exactly <b>42.5mm</b> from
+        the cross bar's midpoint (not touching it) and bar C staying perpendicular to it, within that
+        &plusmn;35&deg; range — watch <b>constraint error</b> for how far off that is once the range
+        can't reach an exact fit. The cross bar's own length isn't forced to stay at 91mm either; its
+        actual length is reported, not enforced.
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  // ---- geometry (mm) ----
+  const LEN_A = 120.0, LEN_B = 30.0;
+
+  function mat3vec(m,v){
+    return [
+      m[0][0]*v[0]+m[0][1]*v[1]+m[0][2]*v[2],
+      m[1][0]*v[0]+m[1][1]*v[1]+m[1][2]*v[2],
+      m[2][0]*v[0]+m[2][1]*v[1]+m[2][2]*v[2],
+    ];
+  }
+  function matmul(a,b){
+    const r=[[0,0,0],[0,0,0],[0,0,0]];
+    for(let i=0;i<3;i++)for(let j=0;j<3;j++){
+      let s=0; for(let k=0;k<3;k++) s+=a[i][k]*b[k][j];
+      r[i][j]=s;
+    }
+    return r;
+  }
+  function Ry(a){ const c=Math.cos(a), s=Math.sin(a); return [[c,0,s],[0,1,0],[-s,0,c]]; }
+  function Rx(a){ const c=Math.cos(a), s=Math.sin(a); return [[1,0,0],[0,c,-s],[0,s,c]]; }
+  function Rz(a){ const c=Math.cos(a), s=Math.sin(a); return [[c,-s,0],[s,c,0],[0,0,1]]; }
+  function add(a,b){ return [a[0]+b[0],a[1]+b[1],a[2]+b[2]]; }
+  function sub(a,b){ return [a[0]-b[0],a[1]-b[1],a[2]-b[2]]; }
+  function scale(a,k){ return [a[0]*k,a[1]*k,a[2]*k]; }
+  function norm(a){ return Math.sqrt(a[0]*a[0]+a[1]*a[1]+a[2]*a[2]); }
+  function dot(a,b){ return a[0]*b[0]+a[1]*b[1]+a[2]*b[2]; }
+  function cross(a,b){
+    return [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+  }
+  // Rodrigues' rotation: rotate v about unit axis by angle
+  function rotateAxis(v, axis, angle){
+    const c = Math.cos(angle), s = Math.sin(angle);
+    return add(add(scale(v, c), scale(cross(axis, v), s)), scale(axis, dot(axis, v) * (1 - c)));
+  }
+
+  // ---- projection: orbit-draggable orthographic, world mm -> canvas px ----
+  const cv = document.getElementById('cv');
+  const ctx = cv.getContext('2d');
+  const cam = { az: -0.7, el: 0.42, scale: 3.2 };
+  function project(p){
+    const cz=Math.cos(cam.az), sz=Math.sin(cam.az);
+    let x = p[0]*cz - p[2]*sz;
+    let z = p[0]*sz + p[2]*cz;
+    const ce=Math.cos(cam.el), se=Math.sin(cam.el);
+    let y = p[1]*ce - z*se;
+    z = p[1]*se + z*ce;
+    return [x, y, z];
+  }
+  const OX = 800, OY = 780;
+  function toCanvas(p){
+    const [x,y] = project(p);
+    return [OX + x*cam.scale, OY - y*cam.scale];
+  }
+
+  function style(vars){
+    const s = getComputedStyle(document.documentElement);
+    const out = {};
+    for (const k of vars) out[k] = s.getPropertyValue(k).trim();
+    return out;
+  }
+
+  function drawLine(p0,p1,color,width){
+    const a=toCanvas(p0), b=toCanvas(p1);
+    ctx.strokeStyle=color; ctx.lineWidth=width; ctx.lineCap='round';
+    ctx.beginPath(); ctx.moveTo(a[0],a[1]); ctx.lineTo(b[0],b[1]); ctx.stroke();
+  }
+  function drawDot(p,color,r){
+    const a=toCanvas(p);
+    ctx.fillStyle=color; ctx.beginPath(); ctx.arc(a[0],a[1],r,0,Math.PI*2); ctx.fill();
+  }
+  function drawGrid(colors){
+    const n=6, step=30;
+    ctx.strokeStyle=colors['--grid']; ctx.lineWidth=1;
+    for(let i=-n;i<=n;i++){
+      drawLine([i*step,-90,-n*step],[i*step,-90,n*step],colors['--grid'],1);
+      drawLine([-n*step,-90,i*step],[n*step,-90,i*step],colors['--grid'],1);
+    }
+  }
+
+  // ---- xyz axis guide ----
+  function drawAxisGuide(origin, len){
+    drawLine(origin, add(origin,[len,0,0]), '#c53f3f', 2.5);
+    drawLine(origin, add(origin,[0,len,0]), '#3fa855', 2.5);
+    drawLine(origin, add(origin,[0,0,len]), '#3f7fc5', 2.5);
+    drawDot(add(origin,[len,0,0]), '#c53f3f', 3);
+    drawDot(add(origin,[0,len,0]), '#3fa855', 3);
+    drawDot(add(origin,[0,0,len]), '#3f7fc5', 3);
+  }
+
+  const BASE = [0,0,0];
+  const COPY_OFFSET = [110,0,0]; // second linkage, translated 110mm along world x
+  const LEN_C = 30.0;
+  const BASE_C = [COPY_OFFSET[0]/2, 0, 88]; // bar C's base: centered in x between the two 120mm bars, 88mm away along +z
+  const LEN_D = 27.0;
+
+  const CROSS_LEN_NOMINAL = 91.0;
+
+  // ---- pure kinematics (no drawing) ----
+  function computeArm(base, ujTheta, ujPhi, elbow){
+    const R = matmul(Ry(ujTheta), Rx(ujPhi));
+    const dirA = mat3vec(R, [0,0,1]);
+    const tipA = add(base, scale(dirA, LEN_A));
+    const Rb = matmul(R, Rx(elbow));
+    const dirB = mat3vec(Rb, [0,0,1]);
+    const tipB = add(tipA, scale(dirB, LEN_B));
+    return {tipA, tipB};
+  }
+
+  // bar D shares bar C's z-rotation (same barC angle) and adds its own free rotation about
+  // the resulting local x-axis: dirD = Rz(barC) * Rx(barD) * [0,1,0]. This is the only one of
+  // the three coordinate axes that gives bar D real, independent motion (y is degenerate since
+  // bar D's rest direction is the y-axis itself; z is redundant with bar C's own rotation).
+  // At barD=0 it continues straight along bar C's direction, so both start upright.
+  function computeCD(barC, barD){
+    const RC = Rz(barC);
+    const dirC = mat3vec(RC, [0,1,0]);
+    const tipC = add(BASE_C, scale(dirC, LEN_C));
+    const R = matmul(RC, Rx(barD));
+    const dirD = mat3vec(R, [0,1,0]);
+    const tipD = add(tipC, scale(dirD, LEN_D));
+    return {tipC, tipD, dirC, dirD};
+  }
+
+  // residual F(x) for x=[theta,phi,barC,barD], given fixed crank angles:
+  //  F0 = |tipD - midpoint(origTipB, copyTipB)| - 42.5  (bar D's tip held exactly 42.5mm from the cross bar's midpoint, not touching it)
+  //  F1 = dirC . crossBarDir (normalized)                 (the C+D arm held exactly perpendicular to the cross bar)
+  // The 91mm cross-bar-length itself is no longer forced — with every bar length fixed there's
+  // no free variable left to hit both the 42.5mm offset+perpendicular AND an exact 91mm, so it's
+  // left to fall out of the geometry and reported as-is (see render()).
+  const CROSS_TO_D_OFFSET = 42.5;
+  function residual(x, crankOrig, crankCopy){
+    const origB = computeArm(BASE, x[0], x[1], crankOrig).tipB;
+    const copyB = computeArm(COPY_OFFSET, x[0], x[1], crankCopy).tipB;
+    const {tipD, dirC} = computeCD(x[2], x[3]);
+    const mid = scale(add(origB, copyB), 0.5);
+    const crossVec = sub(copyB, origB);
+    const crossLen = norm(crossVec);
+    const crossHat = crossLen > 1e-6 ? scale(crossVec, 1/crossLen) : [0,0,1];
+    const perpTerm = dot(dirC, crossHat);
+    const distTerm = norm(sub(tipD, mid)) - CROSS_TO_D_OFFSET;
+    return [distTerm, perpTerm];
+  }
+
+  // solve an NxN linear system Ax=b via Gaussian elimination with partial pivoting
+  function solveLinearN(A, b){
+    const n = A.length;
+    const M = A.map((row,i)=>row.concat([b[i]]));
+    for (let col=0; col<n; col++){
+      let piv = col;
+      for (let r=col+1; r<n; r++) if (Math.abs(M[r][col]) > Math.abs(M[piv][col])) piv = r;
+      if (Math.abs(M[piv][col]) < 1e-12) return null;
+      [M[col], M[piv]] = [M[piv], M[col]];
+      for (let r=0; r<n; r++){
+        if (r === col) continue;
+        const f = M[r][col] / M[col][col];
+        for (let c=col; c<=n; c++) M[r][c] -= f * M[col][c];
+      }
+    }
+    return M.map((row,i)=>row[n]/row[i]);
+  }
+
+  function costOf(F){ let s=0; for (let i=0; i<F.length; i++) s += F[i]*F[i]; return 0.5*s; }
+
+  // Bar C and bar D are kept within +/-20deg of upright (0deg = straight up). theta/phi are
+  // unbounded. Clamped as a hard box constraint (projected each LM step), so once a crank pose
+  // needs bar C or D outside this range to hit the midpoint/perpendicular constraints exactly,
+  // those two stop being exactly satisfiable and the solver reports its closest compromise.
+  const ANGLE_LIMIT = 35 * Math.PI/180;
+  function clampX(x){
+    return [x[0], x[1], Math.max(-ANGLE_LIMIT, Math.min(ANGLE_LIMIT, x[2])), Math.max(-ANGLE_LIMIT, Math.min(ANGLE_LIMIT, x[3]))];
+  }
+
+  // Levenberg-Marquardt least-squares: minimizes ||residual||^2, since the constraints
+  // (91mm cross bar, bar D pinned to its midpoint, bar D perpendicular to the cross bar) don't
+  // have an exact solution for every crank pose given these bar lengths — this always settles
+  // on the closest achievable pose instead of freezing, and the leftover error is reported
+  // honestly in the readout.
+  function lmMinimize(x0, crankOrig, crankCopy){
+    const n = x0.length;
+    let x = clampX(x0.slice());
+    let F = residual(x, crankOrig, crankCopy);
+    let c = costOf(F);
+    let lambda = 1e-2;
+    const h = 1e-5;
+    for (let iter=0; iter<60; iter++){
+      const m = F.length;
+      const J = Array.from({length:m}, ()=>new Array(n).fill(0));
+      for (let j=0; j<n; j++){
+        const xp = x.slice(); xp[j] += h;
+        const Fp = residual(xp, crankOrig, crankCopy);
+        for (let i=0; i<m; i++) J[i][j] = (Fp[i]-F[i])/h;
+      }
+      const JtJ = Array.from({length:n}, ()=>new Array(n).fill(0));
+      for (let i=0; i<n; i++) for (let j=0; j<n; j++){
+        let s=0; for (let k=0; k<m; k++) s += J[k][i]*J[k][j];
+        JtJ[i][j] = s;
+      }
+      const JtF = new Array(n).fill(0);
+      for (let i=0; i<n; i++){ let s=0; for (let k=0; k<m; k++) s += J[k][i]*F[k]; JtF[i]=s; }
+
+      let improved = false;
+      for (let tries=0; tries<15; tries++){
+        const A = JtJ.map((row,i)=>row.map((v,j)=> i===j ? v+lambda : v));
+        const b = JtF.map(v=>-v);
+        const dx = solveLinearN(A, b);
+        if (!dx){ lambda *= 10; continue; }
+        const xn = clampX(x.map((v,i)=>v+dx[i]));
+        const Fn = residual(xn, crankOrig, crankCopy);
+        const cn = costOf(Fn);
+        if (cn < c){ x=xn; F=Fn; c=cn; lambda=Math.max(lambda*0.5, 1e-8); improved=true; break; }
+        lambda *= 3;
+      }
+      if (!improved || c < 1e-10) break;
+    }
+    return {x, F, resid: Math.sqrt(2*c)};
+  }
+
+  // warm-started solution, persisted across frames for continuity
+  let solved = [0, 0, 0, 0]; // [theta, phi, barC, barD]
+
+  function render(crankOrigDeg, crankCopyDeg){
+    const colors = style(['--joint','--elbow','--ink','--sub','--grid','--panel']);
+    const crankOrig = crankOrigDeg*Math.PI/180, crankCopy = crankCopyDeg*Math.PI/180;
+
+    const result = lmMinimize(solved, crankOrig, crankCopy);
+    solved = result.x;
+    const [theta, phi, barC, barD] = solved;
+
+    ctx.clearRect(0,0,cv.width,cv.height);
+    drawGrid(colors);
+    drawAxisGuide([-160,-85,-160], 40);
+
+    const orig = computeArm(BASE, theta, phi, crankOrig);
+    const copy = computeArm(COPY_OFFSET, theta, phi, crankCopy);
+    drawDot(BASE, colors['--joint'], 6);
+    drawLine(BASE, orig.tipA, colors['--joint'], 4);
+    drawDot(orig.tipA, colors['--joint'], 5);
+    drawLine(orig.tipA, orig.tipB, colors['--elbow'], 3.5);
+    drawDot(orig.tipB, colors['--elbow'], 4.5);
+    drawDot(COPY_OFFSET, colors['--joint'], 6);
+    drawLine(COPY_OFFSET, copy.tipA, colors['--joint'], 4);
+    drawDot(copy.tipA, colors['--joint'], 5);
+    drawLine(copy.tipA, copy.tipB, colors['--elbow'], 3.5);
+    drawDot(copy.tipB, colors['--elbow'], 4.5);
+
+    const crossLen = norm(sub(copy.tipB, orig.tipB));
+    drawLine(orig.tipB, copy.tipB, '#9a4fc5', 3);
+
+    const {tipC, tipD} = computeCD(barC, barD);
+    drawDot(BASE_C, '#c53f3f', 5);
+    drawLine(BASE_C, tipC, '#c53f3f', 3);
+    drawDot(tipC, '#c53f3f', 4.5);
+    drawLine(tipC, tipD, '#c58f3f', 3);
+    drawDot(tipD, '#c58f3f', 4.5);
+
+    return {
+      readoutRows: [
+        ['theta (solved)', `${(theta*180/Math.PI).toFixed(1)}°`, false],
+        ['phi (solved)', `${(phi*180/Math.PI).toFixed(1)}°`, false],
+        ['bar C (solved)', `${(barC*180/Math.PI).toFixed(1)}°`, false],
+        ['bar D (solved)', `${(barD*180/Math.PI).toFixed(1)}°`, false],
+        ['cross bar len (derived)', `${crossLen.toFixed(2)}mm`, false],
+        ['tip B', `${orig.tipB.map(v=>v.toFixed(1)).join(', ')}`, false],
+        ['copy tip B', `${copy.tipB.map(v=>v.toFixed(1)).join(', ')}`, false],
+        ['tip D', `${tipD.map(v=>v.toFixed(1)).join(', ')}`, false],
+        ['constraint error', `${result.resid.toFixed(2)}`, result.resid > 1],
+      ]
+    };
+  }
+
+  const crankOrigInput = document.getElementById('crankOrig');
+  const crankCopyInput = document.getElementById('crankCopy');
+  const crankOrigVal = document.getElementById('crankOrigVal');
+  const crankCopyVal = document.getElementById('crankCopyVal');
+  const readoutEl = document.getElementById('readout');
+
+  function update(){
+    const co = parseFloat(crankOrigInput.value), cc = parseFloat(crankCopyInput.value);
+    crankOrigVal.textContent = co.toFixed(1)+'°';
+    crankCopyVal.textContent = cc.toFixed(1)+'°';
+    const {readoutRows} = render(co, cc);
+    let html = `<div class="k">crank orig</div><div class="v">${co.toFixed(1)}°</div>` +
+               `<div class="k">crank copy</div><div class="v">${cc.toFixed(1)}°</div>` +
+               `<div class="divider"></div>`;
+    for (const [k,v,bad] of readoutRows){
+      html += `<div class="k">${k}</div><div class="v${bad?' bad':''}">${v}</div>`;
+    }
+    readoutEl.innerHTML = html;
+  }
+
+  crankOrigInput.addEventListener('input', update);
+  crankCopyInput.addEventListener('input', update);
+  document.getElementById('resetBtn').addEventListener('click', ()=>{
+    crankOrigInput.value = 30; crankCopyInput.value = -30; solved = [0,0,0,0]; update();
+  });
+
+  // ---- orbit drag + wheel zoom ----
+  cv.style.cursor = 'grab';
+  let dragging = false, lastX = 0, lastY = 0;
+  cv.addEventListener('mousedown', (e)=>{
+    dragging = true; lastX = e.clientX; lastY = e.clientY; cv.style.cursor = 'grabbing';
+  });
+  window.addEventListener('mousemove', (e)=>{
+    if (!dragging) return;
+    const dx = e.clientX - lastX, dy = e.clientY - lastY;
+    lastX = e.clientX; lastY = e.clientY;
+    cam.az -= dx * 0.008;
+    cam.el = Math.max(-1.5, Math.min(1.5, cam.el + dy * 0.008));
+    update();
+  });
+  window.addEventListener('mouseup', ()=>{ dragging = false; cv.style.cursor = 'grab'; });
+  cv.addEventListener('wheel', (e)=>{
+    e.preventDefault();
+    cam.scale = Math.max(0.4, Math.min(8, cam.scale * (1 - e.deltaY * 0.001)));
+    update();
+  }, { passive: false });
+  let lastTouch = null;
+  cv.addEventListener('touchstart', (e)=>{
+    if (e.touches.length === 1){ lastTouch = [e.touches[0].clientX, e.touches[0].clientY]; }
+  }, { passive: true });
+  cv.addEventListener('touchmove', (e)=>{
+    if (e.touches.length !== 1 || !lastTouch) return;
+    const t = e.touches[0];
+    const dx = t.clientX - lastTouch[0], dy = t.clientY - lastTouch[1];
+    lastTouch = [t.clientX, t.clientY];
+    cam.az -= dx * 0.008;
+    cam.el = Math.max(-1.5, Math.min(1.5, cam.el + dy * 0.008));
+    update();
+  }, { passive: true });
+
+  const mq = window.matchMedia('(prefers-color-scheme: dark)');
+  mq.addEventListener('change', update);
+
+  update();
+})();
+</script>
