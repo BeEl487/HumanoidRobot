@@ -57,6 +57,14 @@ reward:
   close_approach_range_m: 0.05   # band where close_approach_weight applies -- chosen to comfortably
   # cover the observed 0.03-0.05m hover zone across pp_v11/v13/v14 without affecting the far-field
   # approach (episodes start with the cube much farther than this).
+  # One-time, first genuine contact per episode (2026-08-20) -- before this, touching the cube
+  # without an immediate successful attach was pure downside (distance reward only ever shrinks a
+  # penalty as the gap closes, never a positive reward for contact; cube_disturbance_weight can
+  # fire the instant a touch nudges the cube). That asymmetry rewarded hovering just short of
+  # contact over committing to it -- diagnosed from the RGB-D task hovering ~9-10cm from the cube
+  # instead of closing the last stretch. Small relative to attach_bonus (committing to a real
+  # attach attempt should still be worth far more than merely brushing the cube).
+  touch_bonus: 3.0
   attach_bonus: 12.0               # one-time, first successful suction attach (raised from 8.0 --
   # see the pp_v5 rebalance note below: attempting attach needs to look worth the risk)
   lift_bonus: 10.0                 # one-time, first time the attached cube is lifted above a useful threshold (was 8.0)

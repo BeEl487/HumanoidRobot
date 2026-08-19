@@ -81,6 +81,41 @@ pick_place layout exactly) — it just never got to run once.
   artifacts expected around step 20000 (few minutes at current fps), not step 200000.
 - A stall triggers `runs/rgbd_pp_v3/STALL_DETECTED.flag` per the automation contract.
 
+## rgbd_pp_v14 → rgbd_pp_v15: touch_bonus + a real self-monitor bug found along the way (2026-08-20)
+
+User asked directly: does the reward pay off for *touching* the cube, separately from just getting
+close? Checked the mechanics precisely: no. `distance_weight`/`close_approach_weight` only ever
+*shrink* a per-step penalty as the gap closes (never a positive reward for contact), and
+`attach_bonus` only pays out when touching + suction-on + within-range all coincide in the same
+step. Touching without that exact alignment risks `cube_disturbance_weight` (penalized if the
+touch nudges the cube) with zero offsetting reward. That asymmetry rewards hovering just short of
+contact over committing to it. Added `touch_bonus` (config/pick_place_env.yaml, 3.0, one-time per
+episode, gated the same non-farmable way as attach_bonus/lift_bonus) paid on first genuine
+`_is_suction_touching()` regardless of whether attach also succeeds that step. Applied to the
+**shared** reward config this time (not scoped camera-only like the occlusion penalty/approach
+range) since it's a generically sound fix for a real asymmetry, not something specific to noisy
+vision -- verified pick_place's curriculum `start_attached`/`start_carrying` episodes correctly
+mark `_has_touched_this_episode=True` at reset so it can't double-pay there.
+
+**While relaunching, found `rgbd_pp_v14` had auto-stalled at step 120,000 -- and it was a false
+positive.** The stall report claimed "entropy COLLAPSED EARLY" (-28 -> -35), but the raw training
+log showed `std` healthily *decreasing* toward 0.34 over the same window -- contradictory.
+Root cause: `self_monitor.py` stores `entropy = -entropy_loss`, calibrated for vanilla PPO's
+`DiagGaussianDistribution` where `entropy_loss` is normally negative (-4 to -10 on this task). gSDE
+(switched to in v13) reports `entropy_loss` in a completely different positive range (+27 to +36 on
+this task) -- so `-entropy_loss` lands deeply negative and trips the collapse floor
+(`entropy_now < 0.15`) essentially by construction, independent of whether the policy is actually
+exploring well. **Every future gSDE run would have falsely stalled near its first analysis
+checkpoint.** Fixed in `rgbd_automation.py`: leave the `entropy` CSV column blank when
+`model.use_sde` is true, relying on `analyze_window`'s existing None-guard to skip the
+miscalibrated check entirely rather than feed it a value it was never calibrated to interpret --
+verified the guard degrades safely (empty string is caught by the existing try/except and treated
+as missing data, not a crash).
+
+`rgbd_pp_v15` launched as a fresh init combining all four fixes to date: gSDE+squash-output policy
+(v13), wider `close_approach_range_m` (v14), `touch_bonus` (this entry), and the entropy-monitoring
+fix (this entry) -- also the first run that won't be vulnerable to a repeat of the v14 false stall.
+
 ## rgbd_pp_v13 → rgbd_pp_v14: close_approach_range_m too narrow for this task (2026-08-20)
 
 User suspected the reward itself, not just the policy architecture. Checked directly: at v12's

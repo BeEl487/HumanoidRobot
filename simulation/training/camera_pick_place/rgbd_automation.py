@@ -131,9 +131,21 @@ class RGBDArtifactCallback(BaseCallback):
             now = time.time(); self.fps = (self.num_timesteps - self.last_step) / max(now - self.last_time, 1e-6)
             self.last_time, self.last_step, self.last_log = now, self.num_timesteps, self.num_timesteps
             info = infos[0] if infos else {}; values = self.model.logger.name_to_value
+            # gSDE's entropy_loss has a different sign/scale than vanilla PPO's DiagGaussianDistribution
+            # (observed: +27 to +36 under gSDE here, vs -4 to -10 under vanilla PPO on the same task) --
+            # self_monitor.py's entropy-collapse floor (entropy_now < 0.15) was calibrated for the
+            # vanilla convention, so `-entropy_loss` under gSDE lands deeply negative and trips a false
+            # "COLLAPSED EARLY" verdict essentially by construction, independent of real exploration
+            # health (confirmed: rgbd_pp_v14 auto-stalled at step 120000 with entropy_now=-34.9 while
+            # `std` was actually healthy and decreasing toward 0.34). Leaving "entropy" blank for gSDE
+            # runs relies on analyze_window's existing None-guard to skip the collapse check entirely
+            # rather than feeding it a value it was never calibrated to interpret.
+            entropy_value = "" if getattr(self.model, "use_sde", False) else (
+                -values["train/entropy_loss"] if "train/entropy_loss" in values else ""
+            )
             row = {"global_step": self.num_timesteps, "success_rate": np.mean(self.recent_success) if self.recent_success else "",
                 "avg_reward_100": np.mean(self.recent_rewards) if self.recent_rewards else "", "policy_loss": values.get("train/policy_gradient_loss"),
-                "value_loss": values.get("train/value_loss"), "entropy": -values["train/entropy_loss"] if "train/entropy_loss" in values else "",
+                "value_loss": values.get("train/value_loss"), "entropy": entropy_value,
                 "learning_rate": values.get("train/learning_rate"), "fps": self.fps, "eta_seconds": (self.total_steps-self.num_timesteps)/self.fps,
                 "ee_x": info.get("ee_pos", [None]*3)[0], "ee_y": info.get("ee_pos", [None]*3)[1], "ee_z": info.get("ee_pos", [None]*3)[2],
                 "cube_x": info.get("cube_pos", [None]*3)[0], "cube_y": info.get("cube_pos", [None]*3)[1], "cube_z": info.get("cube_pos", [None]*3)[2],

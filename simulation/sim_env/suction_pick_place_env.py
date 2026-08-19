@@ -182,6 +182,7 @@ class SuctionPickPlaceEnv(gym.Env):
         self._settle_count = 0
         self._is_attached = False
         self._has_attached_this_episode = False
+        self._has_touched_this_episode = False
         self._has_lifted_this_episode = False
         self._has_placed_this_episode = False
         self._prev_carry_dist: float | None = None
@@ -268,6 +269,7 @@ class SuctionPickPlaceEnv(gym.Env):
 
         randomize_cube_physics(self.model, self._rng)
         self._has_attached_this_episode = False
+        self._has_touched_this_episode = False
         self._has_lifted_this_episode = False
         if start_carrying:
             # New curriculum stage (see config/pick_place_env.yaml's curriculum block): skip
@@ -283,6 +285,7 @@ class SuctionPickPlaceEnv(gym.Env):
             mujoco.mj_forward(self.model, self.data)
             self._attach_suction()
             self._has_attached_this_episode = True
+            self._has_touched_this_episode = True
             self._has_lifted_this_episode = True
             self._steps_since_attach = 0
         elif start_attached:
@@ -298,6 +301,7 @@ class SuctionPickPlaceEnv(gym.Env):
             mujoco.mj_forward(self.model, self.data)
             self._attach_suction()
             self._has_attached_this_episode = True
+            self._has_touched_this_episode = True
             self._steps_since_attach = 0
         else:
             randomize_cube_in_box(
@@ -498,6 +502,20 @@ class SuctionPickPlaceEnv(gym.Env):
         disturb_threshold = self.cfg["reward"]["disturbance_velocity_threshold_m_s"]
         cube_disturbance = max(cube_speed - disturb_threshold, 0.0) if is_touching_not_attached else 0.0
 
+        # One-time touch milestone (2026-08-20): before this, contact alone was pure downside --
+        # distance/close_approach only ever *shrink* the per-step penalty as the gap closes (never
+        # a positive reward for contact itself), and touching-without-attaching risks
+        # cube_disturbance_weight the instant the cube's speed ticks up, with zero offsetting
+        # reward if suction/distance don't also line up in that same step to trigger attach_bonus.
+        # That asymmetry rewards hovering just short of contact over committing to it -- diagnosed
+        # from the RGB-D task hovering ~9-10cm from the cube. Gated the same one-time-per-episode
+        # way as attach_bonus/lift_bonus (no farmable repeat reward, matches this file's module
+        # docstring principle) -- curriculum episodes that start already attached mark this True at
+        # reset so it can't re-pay here.
+        just_touched = self._is_suction_touching() and not self._has_touched_this_episode
+        if just_touched:
+            self._has_touched_this_episode = True
+
         just_lifted = False
         if self._is_attached and not self._has_lifted_this_episode and height_above_table > self.cfg["reward"]["lift_threshold_m"]:
             just_lifted = True
@@ -518,6 +536,8 @@ class SuctionPickPlaceEnv(gym.Env):
             is_stalled, is_idle, cube_disturbance, self._prev_carry_dist, self._prev_height,
             self._has_lifted_this_episode, action, self._prev_action, self.cfg,
         )
+        if just_touched:
+            reward += self.cfg["reward"]["touch_bonus"]
         self._prev_action = action
         self._prev_carry_dist = carry_dist
         self._prev_height = height_above_table
@@ -529,6 +549,7 @@ class SuctionPickPlaceEnv(gym.Env):
         truncated = False
         info: dict = {
             "attached": self._has_attached_this_episode,
+            "touched": self._has_touched_this_episode,
             "is_attached": self._is_attached,
             "is_arm_collision": is_arm_collision,
             "is_stalled": is_stalled,
