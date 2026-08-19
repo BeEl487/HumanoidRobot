@@ -18,24 +18,20 @@ video_freq: 20000
 learning_rate: 0.0003
 n_steps: 128
 batch_size: 64
-# Was 0.003. Raised for rgbd_pp_v9's fresh init (2026-08-13) after v6-v8's continuation lineage
-# was found saturated: inspecting the policy's raw (pre-clip) Gaussian mean directly showed
-# shoulder_roll's mean at -3.02, over 3 std devs past the [-1,1] action boundary -- effectively
-# 100% of stochastic samples clipped to the same value, zero exploration signal on that dimension,
-# unable to ever discover the correct (opposite-sign) angle for the actual cube position (confirmed
-# reachable via IK). This is vanilla PPO's known Box-action boundary-saturation pathology (loss
-# computed on the unclipped Gaussian, env only ever sees the clipped value, so reward pressure that
-# keeps saying "more negative is better" keeps pushing the mean past the boundary with no feedback
-# that it stopped mattering) -- baked into network weights, so continuing the same lineage further
-# cannot self-recover, only a fresh init can. Raising ent_coef increases entropy pressure toward
-# higher std, which puts the boundary fewer std-devs away and gives more samples a chance to escape
-# and provide gradient signal -- a mitigation, not a complete fix (entropy only affects std, not
-# mean location). If saturation recurs even at this value, the real fix is a squashed
-# (tanh-bounded) policy distribution instead of vanilla clipped Gaussian, not a further ent_coef
-# bump. Also watch for the OPPOSITE failure (pick_place's own history found ent_coef=0.01 caused
-# entropy runaway/noisy non-convergence on a simpler state-only observation) -- monitor and revert
-# toward 0.003-0.01 if this run shows runaway rather than escaping saturation.
-ent_coef: 0.015
+# History: 0.003 (stable, pick_place's proven value) -> 0.015 for rgbd_pp_v9's fresh init
+# (2026-08-13, to counter v6-v8's action-boundary saturation, see git history/HANDOFF.md) -> back
+# to 0.003 (2026-08-19). rgbd_pp_v9 died (machine restart, unrelated) after ~330k steps with `std`
+# climbing monotonically 1.0 -> 1.59 the entire run, no sign of plateauing -- textbook entropy
+# runaway, exactly the failure mode flagged as a risk when 0.015 was chosen (pick_place's own
+# history already found 0.01 caused this on a simpler state-only observation; 0.015 on a harder
+# image-based task was always going to be at least as risky). User reported "arm hits the box"
+# around this time, consistent with an increasingly noisy/random policy from runaway std, not a
+# reward or kinematics problem. Unlike the earlier action-saturation pathology, this one doesn't
+# need a fresh init -- entropy runaway is a live, reversible effect of the coefficient itself, so
+# resuming from the last checkpoint with ent_coef corrected back down should let std start
+# decreasing again as training continues. If it doesn't (std keeps climbing even at 0.003), that's
+# a different problem and worth a fresh diagnostic pass rather than another blind coefficient change.
+ent_coef: 0.003
 features_dim: 128
 device: auto
 policy_kwargs:
