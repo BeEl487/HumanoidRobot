@@ -8,8 +8,15 @@
     robot URDF is attached to (see simulation/scripts/build_model.py). No robot geometry lives
     here — that stays in models/urdf/humanoid.urdf as the single source of truth.
 
-    Mount height 0.90 m: arbitrary fixed-rig height for a tabletop-reach workspace, revisited by
-    the reachability check once the table/bin are added. See ASSUMPTIONS.md "Torso" table.
+    Mount height 1.00 m (raised from 0.90 m 2026-08-19): user-reported the arm's forearm/upper-arm
+    segments grazing the box walls while reaching down -- at 0.90 m the shoulder sat only ~10.5 cm
+    above the source/destination boxes' opening (table_top 0.75 + wall/floor ~0.045 = ~0.795 m),
+    tight clearance for an 18+15 cm two-link chain to dip in without a shallow, wall-clipping
+    approach angle. Raised to give more vertical room to approach from above. Must stay in sync
+    with MOUNT_HEIGHT_M (scripts/reachability_check.py) -- duplicated because MuJoCo doesn't
+    expose this offset back to the standalone ikpy chain those scripts build. See
+    ASSUMPTIONS.md "Torso" table; re-verified via reachability_check.py / check_reach_collision.py
+    / check_camera_coverage-equivalent before trusting this value.
   -->
   <compiler angle="radian"/>
 
@@ -33,7 +40,7 @@
     <geom name="bin_wall_left" size="0.15 0.0025 0.0165" pos="0.205 0.1025 0.8015" type="box" rgba="0.2 0.5 0.8 0.2"/>
     <geom name="bin_wall_right" size="0.15 0.0025 0.0165" pos="0.205 -0.1025 0.8015" type="box" rgba="0.2 0.5 0.8 0.2"/>
     <light name="key_light" pos="0 0 3" dir="0 0 -1" diffuse="1 1 1"/>
-    <body name="mount" pos="0 0 0.9">
+    <body name="mount" pos="0 0 0.92">
       <frame name="robot_mount">
         <body name="base_link">
           <body name="torso_link">

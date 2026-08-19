@@ -27,7 +27,7 @@ SCENE_CONFIG_PATH = SIM_ROOT / "config" / "scene.yaml"
 # -- ikpy operates in the URDF's own base_link frame (origin at 0,0,0), which has no knowledge of
 # where build_model.py welds the robot into the MuJoCo scene, so targets must be shifted into
 # that frame before solving.
-MOUNT_HEIGHT_M = 0.90
+MOUNT_HEIGHT_M = 0.92  # raised from 0.90 2026-08-19, see models/mjcf/scene.xml's "mount" body comment
 
 REACH_TOLERANCE_M = 0.05  # IK convergence tolerance for counting a point "reachable"
 GRID_N = 6  # GRID_N x GRID_N samples across the bin floor
