@@ -81,6 +81,35 @@ pick_place layout exactly) — it just never got to run once.
   artifacts expected around step 20000 (few minutes at current fps), not step 200000.
 - A stall triggers `runs/rgbd_pp_v3/STALL_DETECTED.flag` per the automation contract.
 
+## rgbd_pp_v9 → v10 → v11 → v12: reverting ent_coef didn't recover the run (2026-08-19/20)
+
+User reported the current checkpoint looked much worse than the previous run's checkpoint at the
+same point. `success_rate`/`pick_success_rate` have been **0.00 at every single checkpoint across
+the entire v9-v11 lineage** (16 checkpoints in v9, 5 in v10, 4 in v11 -- never once succeeded since
+the fresh init), so there's no clean numeric success comparison, but `std` is hard evidence: v11
+was at **1.86**, higher than the 1.6 it inherited from v10, despite `ent_coef` having already been
+reverted to 0.003 (see the entry below). Plotted the full `std` trend within v11: not a runaway
+climb, but a **stuck plateau in the 1.7-1.87 band** for its entire duration, never settling back
+toward the ~0.4-0.6 range policies that actually learn something show elsewhere in this project.
+
+Diagnosis: `--init-checkpoint` restores full optimizer state (Adam momentum/variance), not just
+network weights. v9 spent its whole run at the wrong (too-high) `ent_coef`, building up optimizer
+momentum consistent with high entropy being "correct". Continuing from that checkpoint with the
+corrected `ent_coef=0.003` gives the *loss function* a smaller entropy bonus, but the *optimizer's
+inherited momentum* was still primed to keep pushing std up/sideways -- v10 and v11 were fighting
+that inherited state rather than getting a clean shot at the corrected hyperparameter. This is a
+different mechanism from the earlier boundary-saturation issue but the same practical lesson:
+**some kinds of policy damage live in the optimizer state, not just the weights, and only a true
+fresh init clears both.**
+
+`rgbd_pp_v12` launched as a genuine fresh init (no `--init-checkpoint`) with `ent_coef=0.003`
+already in place from the start, so this is the first clean test of that value on this task.
+Watch its `std` trend specifically -- if it also drifts high with no continuation-inherited excuse
+this time, 0.003 itself (not just "which checkpoint it started from") is the problem, and the next
+experiment should look elsewhere (reward scale/clipping, value_loss magnitude also feeding large
+policy updates, or the image observation itself making this a harder credit-assignment problem
+than pick_place's state observation).
+
 ## rgbd_pp_v8 → rgbd_pp_v9: policy action saturation, fresh init required (2026-08-13)
 
 User reported v6/v7/v8 all converging on an identical stuck pose, close to but not touching the
