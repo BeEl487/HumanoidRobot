@@ -37,118 +37,9 @@ contact_rate/grasp_rate has provided throughout that task's log.
 | pp_v17 | + `lift_progress_penalty` (new), **continued from pp_v16's 1.4M weights** | −280→−58 (noisy) | 20-50% | 0% | fix verified firing correctly but max cube height never moved (0.02-0.04m at every checkpoint, 200k-1.4M) -- direct trace showed why (see below); continued into pp_v18 with a much larger premature-release penalty |
 | pp_v18 | `premature_release_penalty` −3.0→−10.0, **continued from pp_v17's 1.4M weights** | −249→−67 (noisy) | 30-40% | 0% | height ceiling still unmoved after 800k (0.019-0.041m); IK-verified reachability rules out a kinematic ceiling; trace found the real competing incentive -- continued into pp_v19 with `carry_distance_weight` cut ~85% pre-lift |
 | pp_v19 | `carry_distance_weight` −2.0→−0.3 pre-lift, **continued from pp_v18's 800k weights** | −227→−240 (flat) | 20% flat (3 checkpoints) | 0% | height ceiling STILL unmoved (0.021-0.043m) after 3 consecutive fixes/~3.6M cumulative steps -- stopped at 800k, pivoted to a fresh-init test (all pp_v13-v19 fixes combined from step 0) rather than a 4th continuation-lineage tweak |
-| pp_v20 | **fresh random init**, all pp_v13-v19 fixes combined from step 0 | −715→−180 (improving, but from a deep hole) | 0% flat for 7 straight checkpoints (worse than pp_v12's own fresh-init timeline) | 0% | stopped at 1.4M -- second confirmed case of fresh-init clearly underperforming continuation; likely explained by only 10% of episodes being full-task-from-scratch under the current curriculum (vs. 40% when pp_v12 ran), starving a fresh policy of the exposure needed to discover attach at all; reverted to continuing pp_v19 |
+| pp_v20 | **fresh random init**, all pp_v13-v19 fixes combined from step 0 | −715→−180 (improving, but from a deep hole) | 0% flat for 7 straight checkpoints (worse than pp_v12's own fresh-init timeline) | 0% | stopped at 1.4M -- second confirmed case of fresh-init clearly underperforming continuation; likely explained by only 10% of episodes being full-task-from-scratch under the current curriculum (vs. 40% when pp_v12 ran) -- see below |
 | pp_v21 | no config changes, **continued from pp_v19's 800k weights** (reverting the fresh-init detour) | −252→−232 (flat) | 20-30% | 0% | height ceiling STILL unmoved (0.018-0.041m) after 600k -- physics/actuator/mass checks all ruled out a physical ceiling; stopped, pivoted to a rebalanced-curriculum fresh-init test |
 | **pp_v22** | **fresh random init**, curriculum rebalanced for ~60% full-task exposure (see below) | pending | pending | pending | running |
-
-## Lessons learned so far / working theories
-
-Written after pp_v11, at the user's request, to consolidate 11 runs' worth of findings into what to
-actually reuse vs. re-derive next time. Update this section at future inflection points, don't let
-it go stale.
-
-**What's confirmed to work, keep doing it:**
-1. **Fix physical/collision problems before touching reward shaping.** pp_v1's 0% pick rate traced
-   to leftover claw geometry, not a reward problem -- no amount of reward tuning would have fixed
-   it. Always rule out geometry/collision/action-scaling causes first when a behavior looks
-   "wrong," not just "under-rewarded."
-2. **A curriculum is often necessary, not optional, for a multi-stage task.** pp_v2 plateaued at
-   attach-only because the full approach→attach→carry→release chain was too long to stumble into by
-   chance with zero prior stages solved. `start_attached_prob` unblocked it immediately.
-3. **Milestone bonuses must be gated to first-occurrence-per-episode, structurally, every time.**
-   Learned the hard way *twice* (pp_v3/v4's continuous `lift_bonus_weight`, pp_v9's ungated
-   `attach_bonus`) -- and the second instance wasn't caught by "remembering the lesson," it was
-   caught by the user watching a rollout. **Action for next time**: audit every reward term for a
-   fire-once gate as a matter of routine when adding a new bonus, don't wait for an exploit to
-   surface it.
-4. **Curriculum-free eval is non-negotiable once a curriculum exists.** Mixing curriculum-assisted
-   and from-scratch episodes in eval numbers (pp_v2 through pp_v5) makes every reported
-   success-rate silently unreliable.
-5. **A collision/stall distinction (not just a flat collision penalty) fixed real physical jamming**
-   (pp_v6→pp_v7). Flat per-step penalties don't distinguish "brushing past" from "stuck."
-6. **The self-monitoring pipeline is only as trustworthy as its own code** -- found and fixed two
-   real bugs in `self_monitor.py` itself this session (fps blank due to SB3 clearing logger state;
-   an entropy-collapse ratio test that breaks on sign-crossing). Treat the pipeline's own output
-   with the same "verify before trusting" discipline as the policy's behavior -- a report can be
-   wrong, not just the training run.
-
-**What's now confirmed NOT to work, don't repeat:**
-1. **`ent_coef=0.0` for the whole run → entropy collapses, policy freezes into whatever
-   locally-positive fixed action it found first** (pp_v8, video-confirmed: identical state for 400
-   of 600 steps).
-2. **`ent_coef=0.01` for the whole run → the opposite failure, entropy/std runs away without
-   bound** (pp_v9→v10→v11, `std` climbed 0.23→0.82 over ~2.2M cumulative steps, never
-   stabilizing). Video-confirmed consequence: too noisy to close the final ~2cm to attach, so the
-   arm parks near the cube instead ("waits at the cube," per the user's own description, independently
-   matching the measured std trend). **Neither extreme works -- a single fixed `ent_coef` for an
-   entire multi-million-step run looks like the wrong tool full stop**, not just a tuning-value
-   problem. See theory #1 below.
-3. **Continuing from a checkpoint is not free** -- it also carries forward whatever maladaptive
-   habit the parent run ended on (pp_v11 inherited pp_v10's already-elevated std and pushed it
-   further). Continuation is the right call when the parent's trend was genuinely healthy (pp_v7→
-   pp_v8); it's the wrong call when the parent's own end-state is itself suspect. Check the parent's
-   *trend*, not just its latest metrics, before deciding.
-4. **RESOLVED at pp_v22 (after being open since pp_v1): `place_success_rate` is genuinely,
-   repeatably achievable (~10%), not a permanently stuck metric.** Was 0% (one blip, pp_v8) across
-   21 runs and ~20M+ cumulative steps before this. See lesson #6 below for what actually broke it.
-5. **Fresh random init is not automatically the safer choice when a lineage develops a bad habit --
-   it costs the GOOD skills too, not just the bad one.** pp_v12 tested this directly (fresh init,
-   corrected `ent_coef`) against pp_v9-v11's continuation lineage: over 1.4M steps, fresh-init's
-   `suction_cmd_rate` stayed near-zero at almost every checkpoint (0.09, 0.09, one 0.65 blip, then
-   0.00, 0.05, 0.02, 0.05) and `pick_success_rate` never exceeded 30%, well below pp_v10's
-   continued-training 60%. It also visibly re-encountered a wall-jamming collision problem at 1M
-   steps (video-confirmed, `collision: True, stalled: True` sustained for 360+ steps) that pp_v7's
-   fix had already solved in the continued lineage -- fresh init had to re-learn collision avoidance
-   from zero along with everything else. pp_v20 repeated this finding under a different config
-   (0% pick through 1.4M). **Refined rule (see #6 below, this rule isn't the whole story)**: fresh
-   init's failures in both cases traced to inadequate full-task-from-scratch curriculum exposure
-   (10% of episodes), not an inherent weakness of fresh init itself -- pp_v22 fixed exactly that one
-   variable (curriculum rebalanced to ~60% full-task) and fresh init then broke a ceiling five
-   continuation-lineage fixes couldn't touch. The real lesson: don't go fresh AND leave a curriculum
-   tuned for a competent continuation policy -- if going fresh, deliberately re-tune the curriculum
-   for how much a from-scratch policy needs to see the full chain.
-6. **A continuation lineage can get stuck in a reinforced local-optimum "habit" that reward fixes
-   alone can't undo, even when every fix is individually verified correct.** pp_v17-v21 tried FIVE
-   consecutive targeted reward fixes (`lift_progress_penalty`, `premature_release_penalty` raised
-   3x, `carry_distance_weight` cut 85% pre-lift, a curriculum stage, and the underlying entropy fix)
-   against the exact same symptom -- cube height capped at 0.018-0.043m, never crossing
-   `lift_threshold_m` (0.05) -- across ~20 checkpoints and ~3.6M cumulative steps, with ZERO
-   movement on the ceiling despite each fix being verified to change the reward math exactly as
-   intended (scripted tests, step-by-step traces). Physics/actuator/mass checks (IK reachability,
-   joint velocity limits, actuator force limits, weld solver stiffness, object mass) all ruled out
-   a physical explanation. **pp_v22 (fresh init, same reward function, properly-tuned curriculum)
-   broke the ceiling completely within 1.6M steps** (30-episode diagnostic: 87% lift-given-attach,
-   heights 0.047-0.096m) -- strong evidence the actual blocker was a policy-weight-level habit
-   ("attach, then move laterally, not vertically") that gradient descent from an already-confident
-   policy couldn't escape, not the reward shape. **Actionable pattern for next time**: if 2-3
-   individually-verified reward fixes in a row produce zero measurable change on the exact metric
-   each one targets, stop adding more reward terms to the same lineage -- that flat non-response is
-   itself diagnostic of a reinforced-habit problem, and the fix is a properly-curriculum-tuned fresh
-   restart, not fix #4.
-
-**Working theories for what to try next (updated after pp_v22):**
-1. **Anneal `ent_coef` instead of holding it fixed** -- still untested. `ent_coef: 0.003` fixed
-   (not annealed) has now proven robust across continuation, fresh-init, and a rebalanced-curriculum
-   fresh-init (std settles 0.4-0.5 in every case checked) -- less urgent than when this was first
-   written, but annealing might still help squeeze out more precision late in a run.
-2. **RESOLVED-ish, revisit**: the carry→release curriculum stage (`start_carrying_prob`) shipped in
-   pp_v16 and stayed in every run since; pp_v22's breakthrough happened WITH it active at a low
-   value (0.05) -- can't yet isolate how much it specifically helped vs. the overall curriculum
-   rebalance. Worth a controlled comparison later (same fresh-init setup, `start_carrying_prob: 0`)
-   if precise attribution matters.
-3. **Network capacity is probably NOT the bottleneck** -- `explained_variance` has been consistently
-   high (0.85–0.96, up to 0.98 by pp_v18) across every run checked, meaning the value network fits
-   the data fine; pp_v22's breakthrough came from a curriculum/init change, not a bigger network,
-   which is further evidence against this being a capacity problem. Don't spend compute on a bigger
-   network without new evidence pointing there specifically.
-4. **Action-space/observation resolution near the attach point** -- softened by pp_v22's result
-   (a policy CAN execute precise final-centimeter motions given the right training regime), but
-   still not directly tested as its own variable.
-5. **NEW, from pp_v22's success**: place is now at ~10%, not solved. The clear next target is
-   whatever's limiting carry->release specifically, now that lift is demonstrably achievable --
-   apply the same "watch real episodes, trace step-by-step, verify before theorizing" discipline
-   that cracked the lift ceiling, rather than assuming the existing carry/release reward terms are
-   already correctly tuned just because they haven't been the active bottleneck yet.
 
 ## pp_v1 — first attempt
 
@@ -402,69 +293,23 @@ against `training/pick_place/runs`. Live dashboard: `training/serve_runs.py` →
 `pick_place` → `pp_v8`.
 
 **Outcome: pick recovered and improved (70% at 1.8M) but place never happened again.**
-`pick_success_rate` dipped early (70%→20% by 800k) then climbed back to 70% by 1.8M --
-non-monotonic but a real recovery, not noise, matching the pattern seen throughout this log.
-`place_success_rate` was 10% at the very first checkpoint (200k) then flat 0% at every one of the
-next 8 checkpoints through 1.8M -- a full 1.6M steps without a single placement, despite pick
-clearly still improving. The 4 self-monitoring analysis reports (400k/800k/1.2M/1.6M) never
-triggered the stall detector (reward/success trend wasn't flat enough over any 300k window), but
-the 1.6M report did flag entropy collapsing 1.497 → 0.009 ("COLLAPSED EARLY") -- below the stall
-threshold's combined bar, but a real signal on its own.
+`pick_success_rate` dipped early (70%→20% by 800k) then climbed back to 70% by 1.8M -- non-monotonic but a real recovery, not noise, matching the pattern seen throughout this log. `place_success_rate` was 10% at the very first checkpoint (200k) then flat 0% at every one of the next 8 checkpoints through 1.8M -- a full 1.6M steps without a single placement, despite pick clearly still improving. The 4 self-monitoring analysis reports (400k/800k/1.2M/1.6M) never triggered the stall detector (reward/success trend wasn't flat enough over any 300k window), but the 1.6M report did flag entropy collapsing 1.497 → 0.009 ("COLLAPSED EARLY") -- below the stall threshold's combined bar, but a real signal on its own.
 
-Stopped at 1.8M (externally terminated, not by the stall detector -- no `STALL_DETECTED.flag`,
-no error in the log) before reaching the full 2M budget. Rendered rollout frames from ckpt_1600032
-were pulled and inspected before deciding pp_v9's fix (per this project's "watch the video before
-theorizing" rule): frames at steps 181, 361, 541, and 589 of the same 600-step episode showed
-**identical** ee→cube distance (0.018m), cube→dest distance (0.186m), cube height (0.017m), and
-reward (+11.40) -- the policy attaches early, nudges the cube slightly, then freezes into one fixed
-action for the remaining ~400 steps of the episode. Cube height (0.017m) never crosses
-`lift_threshold_m` (0.05m), so `has_lifted` stays `False` the whole time, which means the *weaker*
-`attached_idle_penalty` (-0.08) applies rather than the stronger after-lift one (-0.15) -- a frozen
-near-the-curriculum-spawn hover was cheap enough to sit in indefinitely. This directly explains why
-`place_success_rate` never recovered even as pick did: the policy isn't failing to find place, it's
-not exploring past this frozen equilibrium at all once entropy collapsed.
+Stopped at 1.8M (externally terminated, not by the stall detector -- no `STALL_DETECTED.flag`, no error in the log) before reaching the full 2M budget. Rendered rollout frames from ckpt_1600032 were pulled and inspected before deciding pp_v9's fix (per this project's "watch the video before theorizing" rule): frames at steps 181, 361, 541, and 589 of the same 600-step episode showed **identical** ee→cube distance (0.018m), cube→dest distance (0.186m), cube height (0.017m), and reward (+11.40) -- the policy attaches early, nudges the cube slightly, then freezes into one fixed action for the remaining ~400 steps of the episode. Cube height (0.017m) never crosses `lift_threshold_m` (0.05m), so `has_lifted` stays `False` the whole time, which means the *weaker* `attached_idle_penalty` (-0.08) applies rather than the stronger after-lift one (-0.15) -- a frozen near-the-curriculum-spawn hover was cheap enough to sit in indefinitely. This directly explains why `place_success_rate` never recovered even as pick did: the policy isn't failing to find place, it's not exploring past this frozen equilibrium at all once entropy collapsed.
 
 Checkpoint (final available, stopped here): `checkpoints/ckpt_1800036.zip`.
 
 ## pp_v8 → pp_v9: entropy collapse fix, stronger pre-lift idle penalty, GPU/throughput tuning
 
-Two behavior/reward changes targeting the exact freeze diagnosed above, plus infrastructure changes
-(this run trains on a different, GPU-equipped machine than pp_v1-v8 used):
+Two behavior/reward changes targeting the exact freeze diagnosed above, plus infrastructure changes (this run trains on a different, GPU-equipped machine than pp_v1-v8 used):
 
-1. **`ent_coef`: 0.0 → 0.01** (`config/train_pick_place_ppo.yaml`). Every run of this task so far
-   used SB3's `ent_coef=0.0` default -- nothing ever pushed back against entropy collapse. Directly
-   targets the diagnosed failure mode: keep enough exploration noise alive that the frozen
-   attached-not-lifted equilibrium isn't a permanent trap.
-2. **`attached_idle_penalty`: -0.08 → -0.2** (`config/pick_place_env.yaml`), now stronger than
-   `attached_idle_penalty_after_lift` (-0.15). This is the exact penalty that was too weak to
-   dislodge the observed freeze (attached, not yet lifted, sitting still for ~400/600 steps).
-3. **GPU + throughput tuning, by request.** This run's machine has a working CUDA torch install
-   (RTX 5070, previously unused by this project -- `torch`/`mujoco`/`stable-baselines3` had to be
-   installed into a GPU-enabled venv first, verified with a direct `torch.cuda.is_available()`
-   check before launch) and 20 logical cores / 45GB free RAM (vs. the 8-core machine pp_v1-v8 ran
-   on). Changed: `device: auto` → `cuda` (explicit, so a misdetection can't silently fall back to
-   CPU), `n_envs: 6` → `16` (env stepping is the real throughput bottleneck -- MuJoCo physics is
-   CPU-only regardless of the policy net's device), `batch_size: 64` → `256` (rollout buffer is
-   `n_steps*n_envs` = 8192, still divides evenly into 32 minibatches -- a 128x128 MLP barely dents a
-   modern GPU at batch=64). Note MuJoCo env stepping itself is inherently CPU-bound no matter what --
-   the GPU change only accelerates the PPO network's forward/backward passes, not the simulator.
+1. **`ent_coef`: 0.0 → 0.01** (`config/train_pick_place_ppo.yaml`). Every run of this task so far used SB3's `ent_coef=0.0` default -- nothing ever pushed back against entropy collapse. Directly targets the diagnosed failure mode: keep enough exploration noise alive that the frozen attached-not-lifted equilibrium isn't a permanent trap.
+2. **`attached_idle_penalty`: -0.08 → -0.2** (`config/pick_place_env.yaml`), now stronger than `attached_idle_penalty_after_lift` (-0.15). This is the exact penalty that was too weak to dislodge the observed freeze (attached, not yet lifted, sitting still for ~400/600 steps).
+3. **GPU + throughput tuning, by request.** This run's machine has a working CUDA torch install (RTX 5070, previously unused by this project -- `torch`/`mujoco`/`stable-baselines3` had to be installed into a GPU-enabled venv first, verified with a direct `torch.cuda.is_available()` check before launch) and 20 logical cores / 45GB free RAM (vs. the 8-core machine pp_v1-v8 ran on). Changed: `device: auto` → `cuda` (explicit, so a misdetection can't silently fall back to CPU), `n_envs: 6` → `16` (env stepping is the real throughput bottleneck -- MuJoCo physics is CPU-only regardless of the policy net's device), `batch_size: 64` → `256` (rollout buffer is `n_steps*n_envs` = 8192, still divides evenly into 32 minibatches -- a 128x128 MLP barely dents a modern GPU at batch=64). Note MuJoCo env stepping itself is inherently CPU-bound no matter what -- the GPU change only accelerates the PPO network's forward/backward passes, not the simulator.
 
-**pp_v9**: launched **continuing from pp_v8's ckpt_1800036.zip** (the latest available checkpoint,
-70% pick success) -- same architecture/obs/action space, so the checkpoint loads cleanly; no reason
-to discard 1.8M steps of pick-skill learning over a config-level fix. Not yet confirmed whether the
-entropy/idle-penalty changes actually unstick place -- first checkpoint/analysis pending.
+**pp_v9**: launched **continuing from pp_v8's ckpt_1800036.zip** (the latest available checkpoint, 70% pick success) -- same architecture/obs/action space, so the checkpoint loads cleanly; no reason to discard 1.8M steps of pick-skill learning over a config-level fix. Not yet confirmed whether the entropy/idle-penalty changes actually unstick place -- first checkpoint/analysis pending.
 
-**Outcome: stopped by the user at ~400k after observing a new exploit -- rapid attach/detach
-chatter with reward spiking each cycle.** Root cause found in `sim_env/suction_pick_place_env.py`'s
-`step()`: `attach_bonus` (+12.0) was paying out on **every** attach, not gated to the episode's
-first the way `lift_bonus` already was via `_has_lifted_this_episode` -- `pick_place_rewards.py`'s
-own module docstring says attach is supposed to be "once", so this was a genuine bug, not a design
-choice. A chatter cycle (attach +12, command suction off -> `premature_release_penalty` -3 since
-release wasn't over the destination, reattach +12, ...) nets +9/cycle, farmable indefinitely -- same
-shape of bug as pp_v3/v4's continuous `lift_bonus_weight` exploit. Checkpoints at 200k/400k show
-inflated `mean_reward` (282.0, 159.5) well above pp_v8's comparable range (57-212) with
-`place_success_rate` still 0% at both -- reward not trustworthy, matching how pp_v3/v4's exploited
-checkpoint was handled: **discarded, not continued from.**
+**Outcome: stopped by the user at ~400k after observing a new exploit -- rapid attach/detach chatter with reward spiking each cycle.** Root cause found in `sim_env/suction_pick_place_env.py`'s `step()`: `attach_bonus` (+12.0) was paying out on **every** attach, not gated to the episode's first the way `lift_bonus` already was via `_has_lifted_this_episode` -- `pick_place_rewards.py`'s own module docstring says attach is supposed to be "once", so this was a genuine bug, not a design choice. A chatter cycle (attach +12, command suction off -> `premature_release_penalty` -3 since release wasn't over the destination, reattach +12, ...) nets +9/cycle, farmable indefinitely -- same shape of bug as pp_v3/v4's continuous `lift_bonus_weight` exploit. Checkpoints at 200k/400k show inflated `mean_reward` (282.0, 159.5) well above pp_v8's comparable range (57-212) with `place_success_rate` still 0% at both -- reward not trustworthy, matching how pp_v3/v4's exploited checkpoint was handled: **discarded, not continued from.**
 
 Checkpoints (not used as a parent): `checkpoints/ckpt_200000.zip`, `checkpoints/ckpt_400000.zip`.
 
