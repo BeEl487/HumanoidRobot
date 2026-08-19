@@ -66,6 +66,7 @@ class SuctionPickPlaceEnv(gym.Env):
     def __init__(
         self, config_path: pathlib.Path = ENV_CONFIG_PATH, eval_mode: bool = False,
         enable_camera_occlusion_penalty: bool = False,
+        close_approach_range_m_override: float | None = None,
     ):
         super().__init__()
         self.enable_camera_occlusion_penalty = enable_camera_occlusion_penalty
@@ -73,6 +74,17 @@ class SuctionPickPlaceEnv(gym.Env):
             self.cfg = yaml.safe_load(f)
         with open(SCENE_CONFIG_PATH, encoding="utf-8") as f:
             self.scene_cfg = yaml.safe_load(f)
+        if close_approach_range_m_override is not None:
+            # rgbd_pp_v9-v13 repeatedly got stuck ~9.7cm from the cube -- outside the shared
+            # config's close_approach_range_m (0.05m), so the steeper final-approach gradient
+            # (added to fix this exact symptom on the state-based pick_place task) never
+            # activated. Per-task override rather than changing the shared config value, since
+            # pick_place is at a proven 70% success rate and hasn't shown this symptom -- no
+            # reason to risk it for a fix the camera task specifically needs. See
+            # camera_pick_place/HANDOFF.md for the diagnosis.
+            self.cfg = dict(self.cfg)
+            self.cfg["reward"] = dict(self.cfg["reward"])
+            self.cfg["reward"]["close_approach_range_m"] = close_approach_range_m_override
 
         if eval_mode:
             # Forces every episode through the full task from scratch (no curriculum shortcut) --

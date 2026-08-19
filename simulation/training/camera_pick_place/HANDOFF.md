@@ -81,6 +81,26 @@ pick_place layout exactly) — it just never got to run once.
   artifacts expected around step 20000 (few minutes at current fps), not step 200000.
 - A stall triggers `runs/rgbd_pp_v3/STALL_DETECTED.flag` per the automation contract.
 
+## rgbd_pp_v13 → rgbd_pp_v14: close_approach_range_m too narrow for this task (2026-08-20)
+
+User suspected the reward itself, not just the policy architecture. Checked directly: at v12's
+stuck point (~9.7cm from the cube), `_camera_occlusion_penalty` correctly returns 0.0 (not the
+culprit), but `close_approach_range_m` -- the steeper final-approach gradient added specifically to
+fix this exact "gets close, stalls short of attach range" symptom on the *state-based* pick_place
+task (see `pick_place_rewards.py`'s own comment referencing pp_v11/13/14) -- is only 0.05m (5cm).
+9.7cm is outside that band, so the steeper incentive never activated; only the flatter
+`distance_weight` term applied there. The fix that worked for pick_place didn't reach far enough
+for the camera task, plausibly because vision-derived distance is less precise than pick_place's
+exact state observation.
+
+Added `close_approach_range_m_override` (constructor param on `SuctionPickPlaceEnv`), same pattern
+as `enable_camera_occlusion_penalty` -- scoped to the camera task only (now 0.12m in
+`train_rgbd_pick_place.py`/`rgbd_automation.py`), leaving `config/pick_place_env.yaml`'s shared
+0.05m untouched so pick_place's proven 70% success rate isn't put at risk for a symptom it hasn't
+shown. Verified both envs read the correct value before restarting. `rgbd_pp_v14` launched as a
+fresh init (combines with the gSDE/squash-output fix from v13 -- too early to have isolated which
+of the two changes matters more, watch for that once there's enough data).
+
 ## rgbd_pp_v12 → rgbd_pp_v13: switched to gSDE + squashed policy (2026-08-20)
 
 User reported the arm getting close to the cube, then settling short and staying away instead of

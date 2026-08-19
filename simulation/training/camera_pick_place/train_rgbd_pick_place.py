@@ -35,7 +35,9 @@ RUNS_ROOT = pathlib.Path(__file__).resolve().parent / "runs"
 
 def _make_one(seed: int):
     def _make():
-        env = RGBDVisionWrapper(SuctionPickPlaceEnv(enable_camera_occlusion_penalty=True))
+        env = RGBDVisionWrapper(SuctionPickPlaceEnv(
+            enable_camera_occlusion_penalty=True, close_approach_range_m_override=0.12,
+        ))
         env.reset(seed=seed)
         return Monitor(env)
 

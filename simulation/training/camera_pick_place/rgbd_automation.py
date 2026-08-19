@@ -25,7 +25,9 @@ from generate_camera_dashboard import generate_dashboard  # noqa: E402
 
 
 def eval_env() -> RGBDVisionWrapper:
-    return RGBDVisionWrapper(SuctionPickPlaceEnv(eval_mode=True, enable_camera_occlusion_penalty=True))
+    return RGBDVisionWrapper(SuctionPickPlaceEnv(
+        eval_mode=True, enable_camera_occlusion_penalty=True, close_approach_range_m_override=0.12,
+    ))
 
 
 def evaluate(model, episodes: int, seed: int, trajectory_path: pathlib.Path | None = None) -> dict:
