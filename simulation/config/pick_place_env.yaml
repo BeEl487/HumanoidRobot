@@ -159,7 +159,20 @@ reward:
   # (touching but not attached); once attached the cube's velocity is legitimate carry motion.
   cube_disturbance_weight: -2.0        # per m/s of cube speed above the threshold, while touching-not-attached
   disturbance_velocity_threshold_m_s: 0.05  # cube speed below this (e.g. gentle settling) isn't penalized
-  wasted_motion_weight: -0.05     # per unit of ||action - prev_action||, discourages jittery/wasted motion
+  # Was -0.05. Lowered 2026-08-20 after tracing rgbd_pp_v17's approach-then-retreat oscillation to
+  # a genuine network instability, not reward-seeking: a nearly-unchanged visual observation
+  # (dist 0.1453->0.1453->0.1450m) produced a wildly different deterministic action from one step
+  # to the next (||action-prev_action|| jumped 0.01->0.09->0.74->2.28 across 4 steps), and that
+  # jump was itself directly penalized (-0.05*2.28 = -0.114, most of that step's reward drop) on
+  # top of the resulting retreat. This weight didn't cause the instability, but it does compound
+  # the reward noise every time it happens -- lowering it doesn't fix the root cause (most likely
+  # an undertrained decision boundary at "very close and holding," under-sampled before the
+  # start_attached_prob curriculum anneal was added to the camera task, see
+  # camera_pick_place/HANDOFF.md) but should make the learning signal less punishing/noisy around
+  # it while that gets more full-task exposure to smooth out. Global change (not scoped
+  # camera-only): a smoothness regularizer, not a task-success mechanic, so low risk to
+  # pick_place's own converged 70% policy.
+  wasted_motion_weight: -0.02
   knockout_penalty: -5.0          # cube falls off the table
 
   # Camera-occlusion penalty (2026-08-12): only active when SuctionPickPlaceEnv is constructed with
