@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import pathlib
 import sys
+from collections import deque
 
 import mujoco
 import numpy as np
@@ -190,6 +191,7 @@ class SuctionPickPlaceEnv(gym.Env):
         self._suction_cmd_on = False
         self._stall_counter = 0
         self._idle_counter = 0
+        self._ee_dist_history: deque[float] = deque(maxlen=self.cfg["reward"]["idle_progress_window_steps"])
         self._steps_since_attach = 0
         self._prev_action = np.zeros(n_action, dtype=np.float64)
 
@@ -318,6 +320,7 @@ class SuctionPickPlaceEnv(gym.Env):
         self._suction_cmd_on = False
         self._stall_counter = 0
         self._idle_counter = 0
+        self._ee_dist_history.clear()
         self._prev_action = np.zeros(self.action_space.shape[0], dtype=np.float64)
         return self._get_obs(), {}
 
@@ -383,6 +386,20 @@ class SuctionPickPlaceEnv(gym.Env):
         else:
             self._idle_counter = 0
         return self._idle_counter >= self.cfg["reward"]["idle_steps_threshold"]
+
+    def _is_idle_no_progress(self, ee_to_cube_dist: float) -> bool:
+        """Distance-progress companion to `_update_idle_counter` -- see rgbd_pp_v19's reward config
+        comment (idle_progress_window_steps) for the exact gaming pattern this closes: a
+        precisely-timed periodic joint twitch that resets the velocity-based counter just before
+        its threshold while netting zero real approach progress. Idle if the current distance
+        hasn't beaten the *best* (minimum) distance seen anywhere in the trailing window -- no
+        fixed-period oscillation can hide from a rolling-minimum check the way it can from a
+        single fixed-lag comparison point."""
+        self._ee_dist_history.append(ee_to_cube_dist)
+        r = self.cfg["reward"]
+        if len(self._ee_dist_history) < self._ee_dist_history.maxlen:
+            return False
+        return ee_to_cube_dist >= min(self._ee_dist_history) - r["idle_progress_tolerance_m"]
 
     def _is_cube_in_dest_box(self, cube_pos: np.ndarray) -> bool:
         dx = abs(cube_pos[0] - self._dst_x)
@@ -476,19 +493,22 @@ class SuctionPickPlaceEnv(gym.Env):
 
         is_arm_collision = self._is_arm_collision()
         is_stalled = self._update_stall_counter(is_arm_collision)
+        height_above_table = float(cube_pos[2] - self._table_top_z)
+        carry_dist = float(np.linalg.norm(cube_pos[:2] - self._dest_center_xy))
+        ee_to_cube_dist = float(np.linalg.norm(ee_pos - cube_pos))
         # pp_v13 -> pp_v14: pure stillness, independent of collision -- see _update_idle_counter's
         # docstring. Only meaningful pre-attach (post-attach stillness is already covered by
         # attached_idle_penalty/_after_lift, which key off carry PROGRESS rather than raw motion).
         # Counter is reset (not just ignored) while attached so a stale count can't immediately
-        # re-trigger the instant suction releases.
+        # re-trigger the instant suction releases. OR'd with the distance-progress check
+        # (_is_idle_no_progress) added after rgbd_pp_v19 -- either condition alone is sufficient;
+        # see that method's docstring for why the velocity check alone is gameable.
         if self._is_attached:
             self._idle_counter = 0
+            self._ee_dist_history.clear()
             is_idle = False
         else:
-            is_idle = self._update_idle_counter()
-        height_above_table = float(cube_pos[2] - self._table_top_z)
-        carry_dist = float(np.linalg.norm(cube_pos[:2] - self._dest_center_xy))
-        ee_to_cube_dist = float(np.linalg.norm(ee_pos - cube_pos))
+            is_idle = self._update_idle_counter() or self._is_idle_no_progress(ee_to_cube_dist)
 
         # "Bulldozing": the suction cup is touching the cube but hasn't attached, and the cube is
         # moving fast -- being knocked/pushed around rather than gently approached. Without this,

@@ -153,6 +153,18 @@ reward:
   # this has no collision to co-occur with, so it needs to tolerate normal brief pauses (e.g.
   # settling after a fast approach, or a deliberate stop-and-reassess) without punishing them,
   # only genuine multi-second freezing/parking.
+  # rgbd_pp_v19 (2026-08-20): the velocity-only check above is gameable -- traced a checkpoint to
+  # a precisely-timed ~22-step cycle where shoulder_pitch ramps slowly (staying under
+  # idle_velocity_threshold_rad_s) for ~17 steps then spikes hard for a few steps (resetting the
+  # idle counter just before it hits idle_steps_threshold), while ee_to_cube_dist netted to
+  # *exactly zero* change across the full cycle -- confirmed reproducible to the exact step.
+  # This progress-based check can't be gamed by irrelevant joint motion the same way: idle if the
+  # current distance hasn't beaten the *best* (minimum) distance achieved anywhere in the last
+  # idle_progress_window_steps, which no fixed-period oscillation can hide from regardless of its
+  # phase relative to any single lookback point. OR'd with the velocity check above (either
+  # condition alone is sufficient), pre-attach only, same gating.
+  idle_progress_window_steps: 40         # 2.0s at 20Hz -- ~2x the observed gaming cycle's period
+  idle_progress_tolerance_m: 0.005       # must beat the window's best distance by at least this much
   # "Bulldozing" fix: user observed the policy touching the cube, pushing it away instead of
   # gripping it, then continuing to chase it -- ee_to_cube_dist can look like "progress" even
   # while shoving the cube around, so nothing previously penalized this. Only applies pre-attach
