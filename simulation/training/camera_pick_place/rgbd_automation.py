@@ -12,6 +12,7 @@ from collections import deque
 import imageio
 import mujoco
 import numpy as np
+import yaml
 from PIL import Image, ImageDraw
 from stable_baselines3.common.callbacks import BaseCallback
 
@@ -20,7 +21,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent / "
 from training.pick_place import self_monitor
 from training.camera_pick_place.task_logging import TaskMetricsLogger
 from sim_env.rgbd_vision_wrapper import RGBDVisionWrapper
-from sim_env.suction_pick_place_env import SuctionPickPlaceEnv
+from sim_env.suction_pick_place_env import SuctionPickPlaceEnv, ENV_CONFIG_PATH
 from generate_camera_dashboard import generate_dashboard  # noqa: E402
 
 
@@ -109,6 +110,8 @@ def render_video(model, path: pathlib.Path, pov_path: pathlib.Path, seed: int) -
 
 
 class RGBDArtifactCallback(BaseCallback):
+    ANNEAL_FREQ = 5000
+
     def __init__(self, run_dir: pathlib.Path, total_steps: int, cfg: dict, seed: int):
         super().__init__()
         self.run_dir, self.total_steps, self.cfg, self.seed = run_dir, total_steps, cfg, seed
@@ -119,10 +122,33 @@ class RGBDArtifactCallback(BaseCallback):
         self.recent_rewards, self.recent_success = deque(maxlen=100), deque(maxlen=100)
         self.last_log = self.last_eval = self.last_analysis = self.last_video = 0
         self.last_time, self.last_step, self.fps = time.time(), 0, None
+        self._last_anneal_step = 0
+        # curriculum lives in pick_place_env.yaml (the shared env/reward config), not `cfg` above
+        # (camera_rgbd_pick_place_train.yaml, PPO hyperparameters only) -- loaded separately here,
+        # same as train_ppo_pick_place.py's own env_cfg/curriculum_cfg split.
+        with open(ENV_CONFIG_PATH, encoding="utf-8") as f:
+            self._curriculum_cfg = yaml.safe_load(f).get("curriculum", {})
         (run_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
         (run_dir / "videos").mkdir(exist_ok=True); (run_dir / "trajectories").mkdir(exist_ok=True)
 
     def _on_step(self) -> bool:
+        # Was missing entirely (train_ppo_pick_place.py's PeriodicArtifactCallback has this same
+        # anneal, this one never did): without it, start_attached_prob stays pinned at its static
+        # config value (0.35 -> 60% full-task episodes) for the WHOLE run instead of annealing
+        # toward start_attached_prob_final (0.15 -> 80% full-task) as training matures. Diagnosed
+        # from rgbd_pp_v17 (580k+ steps, 29 checkpoints, still 0% success) hovering ~14cm from the
+        # cube with suction_cmd permanently off the entire traced rollout -- attach requires
+        # touching + suction-on + in-range to coincide in the same step, and discovering that
+        # 3-way conjunction from scratch needs generous, *increasing* full-task exposure as std
+        # drops and exploration narrows, exactly what pick_place's own anneal was built to give.
+        anneal_initial = self._curriculum_cfg.get("start_attached_prob_initial")
+        anneal_final = self._curriculum_cfg.get("start_attached_prob_final")
+        if anneal_initial is not None and self.num_timesteps - self._last_anneal_step >= self.ANNEAL_FREQ:
+            self._last_anneal_step = self.num_timesteps
+            frac = min(self.num_timesteps / self.total_steps, 1.0)
+            prob = anneal_initial + frac * (anneal_final - anneal_initial)
+            self.training_env.env_method("set_start_attached_prob", prob)
+
         infos, dones = self.locals.get("infos", []), self.locals.get("dones", [])
         for info, done in zip(infos, dones):
             if done and "episode" in info:

@@ -295,8 +295,12 @@ def write_analysis_report(
             f"(relative change over window: {window['reward_relative_change']*100:+.1f}%)",
             f"- success rate now: {window['success_rate_now']}",
             f"- success rate trend slope: {window['success_rate_trend_slope']:+.5f}",
-            f"- entropy: {window['entropy_start']:.3f} (run start) -> {window['entropy_now']:.3f} (now)"
-            + (" -- COLLAPSED EARLY" if window["entropy_collapsed_early"] else ""),
+            (
+                f"- entropy: {window['entropy_start']:.3f} (run start) -> {window['entropy_now']:.3f} (now)"
+                + (" -- COLLAPSED EARLY" if window["entropy_collapsed_early"] else "")
+                if window["entropy_start"] is not None and window["entropy_now"] is not None
+                else "- entropy: n/a (blank under gSDE -- see rgbd_automation.py)"
+            ),
             f"- value_loss std: {window['value_loss_std']:.3f}, policy_loss std: {window['policy_loss_std']:.4f}",
         ]
     lines += ["", f"## Simulation performance", f"- fps: {fps:.1f}" if fps else "- fps: n/a"]
