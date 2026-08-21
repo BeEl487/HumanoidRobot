@@ -68,9 +68,20 @@ class SuctionPickPlaceEnv(gym.Env):
         self, config_path: pathlib.Path = ENV_CONFIG_PATH, eval_mode: bool = False,
         enable_camera_occlusion_penalty: bool = False,
         close_approach_range_m_override: float | None = None,
+        touch_only_mode: bool = False,
     ):
         super().__init__()
         self.enable_camera_occlusion_penalty = enable_camera_occlusion_penalty
+        # 2026-08-21 (user request): a stripped-down task isolating just the approach+touch skill
+        # -- the hardest-diagnosed sub-behavior across rgbd_pp_v9-v21 -- from every other reward
+        # term (attach/lift/carry/place bonuses, collision/idle/disturbance/wasted-motion
+        # penalties, camera occlusion). Reward becomes ONLY distance_weight/close_approach_weight
+        # (continuous, pulls toward the cube) + touch_bonus (one-time on first real contact), and
+        # the episode terminates in success the instant genuine suction-cup contact happens --
+        # no suction command, no attach, no lift/carry/place required. Goal: a much simpler,
+        # faster-feedback signal to confirm the vision pipeline + arm can learn to close the full
+        # gap at all, before layering the rest of the task back on.
+        self.touch_only_mode = touch_only_mode
         with open(config_path, encoding="utf-8") as f:
             self.cfg = yaml.safe_load(f)
         with open(SCENE_CONFIG_PATH, encoding="utf-8") as f:
@@ -100,6 +111,13 @@ class SuctionPickPlaceEnv(gym.Env):
             self.cfg["curriculum"] = dict(self.cfg.get("curriculum", {}))
             self.cfg["curriculum"]["enabled"] = False
         self.eval_mode = eval_mode
+
+        if touch_only_mode:
+            # No curriculum shortcut makes sense for a task whose entire point is practicing the
+            # from-scratch approach -- every episode should start with the cube freshly spawned.
+            self.cfg = dict(self.cfg)
+            self.cfg["curriculum"] = dict(self.cfg.get("curriculum", {}))
+            self.cfg["curriculum"]["enabled"] = False
 
         self.side = self.cfg["active_arm"]
         self.model, self.data = load_model(task="suction_pick_place")
@@ -550,20 +568,30 @@ class SuctionPickPlaceEnv(gym.Env):
             just_placed = True
             self._has_placed_this_episode = True
 
-        reward = compute_step_reward(
-            ee_pos, cube_pos, self._dest_center_xy, height_above_table,
-            self._is_attached, just_attached, just_lifted, just_placed, just_released_early, is_arm_collision,
-            is_stalled, is_idle, cube_disturbance, self._prev_carry_dist, self._prev_height,
-            self._has_lifted_this_episode, action, self._prev_action, self.cfg,
-        )
-        if just_touched:
-            reward += self.cfg["reward"]["touch_bonus"]
+        if self.touch_only_mode:
+            # Only distance_weight/close_approach_weight (continuous, pulls toward the cube) +
+            # touch_bonus (one-time) -- every other reward term (attach/lift/carry/place,
+            # collision/idle/disturbance/wasted-motion, camera occlusion) is intentionally absent.
+            r = self.cfg["reward"]
+            reward = r["distance_weight"] * ee_to_cube_dist
+            if ee_to_cube_dist < r["close_approach_range_m"]:
+                reward += r["close_approach_weight"] * ee_to_cube_dist
+            if just_touched:
+                reward += r["touch_bonus"]
+        else:
+            reward = compute_step_reward(
+                ee_pos, cube_pos, self._dest_center_xy, height_above_table,
+                self._is_attached, just_attached, just_lifted, just_placed, just_released_early, is_arm_collision,
+                is_stalled, is_idle, cube_disturbance, self._prev_carry_dist, self._prev_height,
+                self._has_lifted_this_episode, action, self._prev_action, self.cfg,
+            )
+            if just_touched:
+                reward += self.cfg["reward"]["touch_bonus"]
+            if self.enable_camera_occlusion_penalty and not self._is_attached:
+                reward += self._camera_occlusion_penalty(ee_pos, cube_pos)
         self._prev_action = action
         self._prev_carry_dist = carry_dist
         self._prev_height = height_above_table
-
-        if self.enable_camera_occlusion_penalty and not self._is_attached:
-            reward += self._camera_occlusion_penalty(ee_pos, cube_pos)
 
         terminated = False
         truncated = False
@@ -586,23 +614,36 @@ class SuctionPickPlaceEnv(gym.Env):
             "cube_pos": (float(cube_pos[0]), float(cube_pos[1]), float(cube_pos[2])),
         }
 
-        if just_placed:
-            terminated = True
-            info["success"] = True
+        if self.touch_only_mode:
+            # Success is genuine contact alone -- no suction command, attach, lift, carry, or
+            # place required. Knockout still ends the episode (a scene-bounds/failure condition,
+            # not a task-reward term), but without knockout_penalty -- no reward terms besides
+            # distance/close_approach/touch_bonus apply in this mode.
+            if just_touched:
+                terminated = True
+                info["success"] = True
+            elif cube_pos[2] < self._table_top_z - self.cfg["failure"]["table_edge_margin_m"]:
+                terminated = True
+                info["success"] = False
+            stage = 1 if self._has_touched_this_episode else 0
+        else:
+            if just_placed:
+                terminated = True
+                info["success"] = True
 
-        if cube_pos[2] < self._table_top_z - self.cfg["failure"]["table_edge_margin_m"]:
-            terminated = True
-            reward += self.cfg["reward"]["knockout_penalty"]
-            info["success"] = False
+            if cube_pos[2] < self._table_top_z - self.cfg["failure"]["table_edge_margin_m"]:
+                terminated = True
+                reward += self.cfg["reward"]["knockout_penalty"]
+                info["success"] = False
 
-        stage = 0
-        if self._is_attached:
-            if height_above_table > self.cfg["reward"]["lift_threshold_m"]:
-                stage = 2
-            else:
-                stage = 1
-        if just_placed:
-            stage = 3
+            stage = 0
+            if self._is_attached:
+                if height_above_table > self.cfg["reward"]["lift_threshold_m"]:
+                    stage = 2
+                else:
+                    stage = 1
+            if just_placed:
+                stage = 3
 
         info["suction_cmd"] = float(self._suction_cmd_on)
         info["stage"] = stage

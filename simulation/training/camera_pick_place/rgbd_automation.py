@@ -20,19 +20,31 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent / "
 
 from training.pick_place import self_monitor
 from training.camera_pick_place.task_logging import TaskMetricsLogger
+from training.live_status import clear_live_status, write_live_frame, write_live_status
+from sim_env.domain_randomization import randomize_lighting
 from sim_env.rgbd_vision_wrapper import RGBDVisionWrapper
 from sim_env.suction_pick_place_env import SuctionPickPlaceEnv, ENV_CONFIG_PATH
 from generate_camera_dashboard import generate_dashboard  # noqa: E402
 
+LIVE_TICK_SECONDS = 0.33  # ~3 updates/sec -- 1.0 read as too slow/choppy for a "live" view
+LIVE_RESET_SECONDS = 10.0
+LIVE_CAMERAS = ("external", "head_camera")
 
-def eval_env() -> RGBDVisionWrapper:
+
+def eval_env(env_config_path: pathlib.Path = ENV_CONFIG_PATH, enable_camera_occlusion_penalty: bool = True,
+             close_approach_range_m_override: float | None = 0.12, touch_only_mode: bool = False) -> RGBDVisionWrapper:
     return RGBDVisionWrapper(SuctionPickPlaceEnv(
-        eval_mode=True, enable_camera_occlusion_penalty=True, close_approach_range_m_override=0.12,
+        config_path=env_config_path, eval_mode=True,
+        enable_camera_occlusion_penalty=enable_camera_occlusion_penalty,
+        close_approach_range_m_override=close_approach_range_m_override,
+        touch_only_mode=touch_only_mode,
     ))
 
 
-def evaluate(model, episodes: int, seed: int, trajectory_path: pathlib.Path | None = None) -> dict:
-    env = eval_env()
+def evaluate(model, episodes: int, seed: int, trajectory_path: pathlib.Path | None = None,
+             env_config_path: pathlib.Path = ENV_CONFIG_PATH, enable_camera_occlusion_penalty: bool = True,
+             close_approach_range_m_override: float | None = 0.12, touch_only_mode: bool = False) -> dict:
+    env = eval_env(env_config_path, enable_camera_occlusion_penalty, close_approach_range_m_override, touch_only_mode)
     rewards, successes, attachments, stages, trajectories = [], [], [], [], []
     try:
         for episode in range(episodes):
@@ -79,11 +91,13 @@ def _overlay(frame: np.ndarray, step: int, info: dict, reward: float) -> np.ndar
     return np.asarray(img)
 
 
-def render_video(model, path: pathlib.Path, pov_path: pathlib.Path, seed: int) -> None:
+def render_video(model, path: pathlib.Path, pov_path: pathlib.Path, seed: int,
+                  env_config_path: pathlib.Path = ENV_CONFIG_PATH, enable_camera_occlusion_penalty: bool = True,
+                  close_approach_range_m_override: float | None = 0.12, touch_only_mode: bool = False) -> None:
     """Renders two views of the same deterministic rollout: `path` (3rd-person external, whole
     robot+workspace visible -- the primary/default video) and `pov_path` (head-camera POV, exactly
     what the policy's RGB channel receives, sans depth)."""
-    env = eval_env()
+    env = eval_env(env_config_path, enable_camera_occlusion_penalty, close_approach_range_m_override, touch_only_mode)
     renderer = mujoco.Renderer(env.unwrapped.model, height=480, width=640)
     ext_cam = mujoco.MjvCamera()
     mujoco.mjv_defaultFreeCamera(env.unwrapped.model, ext_cam)
@@ -112,26 +126,104 @@ def render_video(model, path: pathlib.Path, pov_path: pathlib.Path, seed: int) -
 class RGBDArtifactCallback(BaseCallback):
     ANNEAL_FREQ = 5000
 
-    def __init__(self, run_dir: pathlib.Path, total_steps: int, cfg: dict, seed: int):
+    def __init__(self, run_dir: pathlib.Path, total_steps: int, cfg: dict, seed: int,
+                 env_config_path: pathlib.Path = ENV_CONFIG_PATH, enable_camera_occlusion_penalty: bool = True,
+                 close_approach_range_m_override: float | None = 0.12, task_name: str = "rgbd_pick_place",
+                 touch_only_mode: bool = False):
         super().__init__()
         self.run_dir, self.total_steps, self.cfg, self.seed = run_dir, total_steps, cfg, seed
+        self.env_config_path = env_config_path
+        self.enable_camera_occlusion_penalty = enable_camera_occlusion_penalty
+        self.close_approach_range_m_override = close_approach_range_m_override
+        self.touch_only_mode = touch_only_mode
         self.log_freq, self.eval_freq, self.analysis_freq = cfg["log_freq"], cfg["eval_freq"], cfg["analysis_freq"]
         self.video_freq = cfg.get("video_freq", self.eval_freq)
         self.metrics = self_monitor.MetricsLogger(run_dir / "metrics_log.csv")
-        self.task_metrics = TaskMetricsLogger(run_dir / "task_logs" / "rgbd_pick_place.csv", task_name="rgbd_pick_place", run_name=run_dir.name)
+        self.task_metrics = TaskMetricsLogger(run_dir / "task_logs" / f"{task_name}.csv", task_name=task_name, run_name=run_dir.name)
         self.recent_rewards, self.recent_success = deque(maxlen=100), deque(maxlen=100)
         self.last_log = self.last_eval = self.last_analysis = self.last_video = 0
         self.last_time, self.last_step, self.fps = time.time(), 0, None
         self._last_anneal_step = 0
-        # curriculum lives in pick_place_env.yaml (the shared env/reward config), not `cfg` above
-        # (camera_rgbd_pick_place_train.yaml, PPO hyperparameters only) -- loaded separately here,
-        # same as train_ppo_pick_place.py's own env_cfg/curriculum_cfg split.
-        with open(ENV_CONFIG_PATH, encoding="utf-8") as f:
+        # curriculum lives in the env/reward config (env_config_path), not `cfg` above (PPO
+        # hyperparameters only) -- loaded separately here, same as train_ppo_pick_place.py's own
+        # env_cfg/curriculum_cfg split. Missing/disabled curriculum (e.g. camera_approach_only's
+        # config) just means the anneal below never fires (anneal_initial stays None).
+        with open(self.env_config_path, encoding="utf-8") as f:
             self._curriculum_cfg = yaml.safe_load(f).get("curriculum", {})
         (run_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
         (run_dir / "videos").mkdir(exist_ok=True); (run_dir / "trajectories").mkdir(exist_ok=True)
 
+        # Live Training View support (RUN_CONVENTION.md #3/#4): a persistent single env + renderer,
+        # separate from the SubprocVecEnv training workers, stepped with the model's *current*
+        # in-memory weights once a second so the dashboard can watch the literal policy being
+        # optimized right now rather than a reloaded checkpoint. Reset at least every
+        # LIVE_RESET_SECONDS so a stalled episode never leaves the view frozen.
+        self._live_env = eval_env(self.env_config_path, self.enable_camera_occlusion_penalty, self.close_approach_range_m_override, self.touch_only_mode)
+        self._live_renderer = mujoco.Renderer(self._live_env.unwrapped.model, height=480, width=640)
+        self._live_ext_cam = mujoco.MjvCamera()
+        mujoco.mjv_defaultFreeCamera(self._live_env.unwrapped.model, self._live_ext_cam)
+        self._live_ext_cam.lookat, self._live_ext_cam.distance = EXT_CAM_LOOKAT, EXT_CAM_DISTANCE
+        self._live_ext_cam.azimuth, self._live_ext_cam.elevation = EXT_CAM_AZIMUTH, EXT_CAM_ELEVATION
+        # Captured once, before any randomization -- randomize_lighting jitters around this fixed
+        # baseline rather than the light's current position so repeated resets over a long-running
+        # live session can't compound into unbounded drift.
+        self._live_light_nominal_pos = self._live_env.unwrapped.model.light_pos[0].copy()
+        self._live_obs = self._live_reset(seed=self.seed)
+        self._live_episode_started = datetime.datetime.now(datetime.timezone.utc)
+        self._live_reward = 0.0
+        self._live_last_tick = 0.0
+
+    def _live_reset(self, seed: int | None = None):
+        """Object pose/friction/mass are already re-randomized on every SuctionPickPlaceEnv.reset()
+        call regardless of seed (see randomize_cube_physics/randomize_cube_in_box calls in its own
+        reset()); this adds lighting on top for the camera view, per RUN_CONVENTION.md's live feed
+        -- the one axis of domain randomization this task doesn't already apply automatically."""
+        obs, _ = self._live_env.reset(seed=seed)
+        randomize_lighting(
+            self._live_env.unwrapped.model, self._live_env.unwrapped._rng, self._live_light_nominal_pos,
+        )
+        return obs
+
+    def _live_tick(self) -> None:
+        now = time.time()
+        if now - self._live_last_tick < LIVE_TICK_SECONDS:
+            return
+        self._live_last_tick = now
+
+        force_reset = (
+            datetime.datetime.now(datetime.timezone.utc) - self._live_episode_started
+        ).total_seconds() >= LIVE_RESET_SECONDS
+        if force_reset:
+            self._live_obs = self._live_reset()
+            self._live_episode_started = datetime.datetime.now(datetime.timezone.utc)
+            self._live_reward = 0.0
+
+        # Advance roughly LIVE_TICK_SECONDS of simulated robot time per tick (scaled off control_hz,
+        # capped) so the depicted motion tracks real time regardless of tick cadence -- only the
+        # last frame of the burst is rendered, keeping render cost to one frame/camera per tick.
+        steps = max(1, min(round(self._live_env.unwrapped.control_hz * LIVE_TICK_SECONDS), 60))
+        info = {}
+        for _ in range(steps):
+            action, _ = self.model.predict(self._live_obs, deterministic=False)
+            self._live_obs, reward, terminated, truncated, info = self._live_env.step(action)
+            self._live_reward += reward
+            if terminated or truncated:
+                self._live_obs = self._live_reset()
+                self._live_episode_started = datetime.datetime.now(datetime.timezone.utc)
+                self._live_reward = 0.0
+
+        self._live_renderer.update_scene(self._live_env.unwrapped.data, camera=self._live_ext_cam)
+        write_live_frame(self.run_dir, "external", _overlay(self._live_renderer.render(), self.num_timesteps, info, self._live_reward))
+        self._live_renderer.update_scene(self._live_env.unwrapped.data, camera="head_camera")
+        write_live_frame(self.run_dir, "head_camera", _overlay(self._live_renderer.render(), self.num_timesteps, info, self._live_reward))
+        write_live_status(
+            self.run_dir, sim_engine="mujoco", step=self.num_timesteps,
+            cameras=list(LIVE_CAMERAS), episode_started=self._live_episode_started,
+        )
+
     def _on_step(self) -> bool:
+        self._live_tick()
+
         # Was missing entirely (train_ppo_pick_place.py's PeriodicArtifactCallback has this same
         # anneal, this one never did): without it, start_attached_prob stays pinned at its static
         # config value (0.35 -> 60% full-task episodes) for the WHOLE run instead of annealing
@@ -196,10 +288,12 @@ class RGBDArtifactCallback(BaseCallback):
 
     def _cycle(self, final: bool) -> None:
         step = self.num_timesteps; checkpoint = self.run_dir / "checkpoints" / f"ckpt_{step}.zip"; self.model.save(checkpoint)
-        metrics = evaluate(self.model, self.cfg["n_eval_episodes"], self.seed + step, self.run_dir / "trajectories" / f"ckpt_{step}.npz")
+        metrics = evaluate(self.model, self.cfg["n_eval_episodes"], self.seed + step, self.run_dir / "trajectories" / f"ckpt_{step}.npz",
+                           self.env_config_path, self.enable_camera_occlusion_penalty, self.close_approach_range_m_override, self.touch_only_mode)
         video = self.run_dir / "videos" / f"ckpt_{step}.mp4"
         video_pov = self.run_dir / "videos" / f"ckpt_{step}_pov.mp4"
-        render_video(self.model, video, video_pov, self.seed + step)
+        render_video(self.model, video, video_pov, self.seed + step,
+                     self.env_config_path, self.enable_camera_occlusion_penalty, self.close_approach_range_m_override, self.touch_only_mode)
         manifest_path = self.run_dir / "manifest.json"; manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {"checkpoints": []}
         timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
         manifest["checkpoints"].append({
@@ -207,6 +301,7 @@ class RGBDArtifactCallback(BaseCallback):
             "video": str(video.relative_to(self.run_dir)), "video_pov": str(video_pov.relative_to(self.run_dir)),
             "final": final, "timestamp": timestamp, **metrics,
         })
+        manifest["sim_engine"] = "mujoco"
         manifest["total_timesteps_target"] = self.total_steps
         manifest["last_updated"] = timestamp
         manifest_path.write_text(json.dumps(manifest, indent=2))
@@ -217,3 +312,6 @@ class RGBDArtifactCallback(BaseCallback):
         final_video = self.run_dir / "videos" / f"ckpt_{final_step}.mp4"
         if self.last_eval != final_step or not final_video.exists():
             self._cycle(final=True)
+        self._live_renderer.close()
+        self._live_env.close()
+        clear_live_status(self.run_dir)

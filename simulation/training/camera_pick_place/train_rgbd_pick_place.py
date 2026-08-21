@@ -33,10 +33,11 @@ CONFIG_PATH = SIM_ROOT / "config" / "camera_rgbd_pick_place_train.yaml"
 RUNS_ROOT = pathlib.Path(__file__).resolve().parent / "runs"
 
 
-def _make_one(seed: int):
+def _make_one(seed: int, touch_only_mode: bool = False):
     def _make():
         env = RGBDVisionWrapper(SuctionPickPlaceEnv(
             enable_camera_occlusion_penalty=True, close_approach_range_m_override=0.12,
+            touch_only_mode=touch_only_mode,
         ))
         env.reset(seed=seed)
         return Monitor(env)
@@ -44,11 +45,11 @@ def _make_one(seed: int):
     return _make
 
 
-def make_env(seed: int = 0, n_envs: int = 1):
+def make_env(seed: int = 0, n_envs: int = 1, touch_only_mode: bool = False):
     # RGB-D rendering is CPU-bound per env (software MuJoCo rendering, no shared GPU context), so
     # unlike the state-only pick_place task this is worth parallelizing even at modest n_envs --
     # a single DummyVecEnv measured ~7-8 fps end to end, making a 2M-step run take multiple days.
-    fns = [_make_one(seed + i) for i in range(n_envs)]
+    fns = [_make_one(seed + i, touch_only_mode) for i in range(n_envs)]
     if n_envs > 1:
         return SubprocVecEnv(fns)
     return DummyVecEnv(fns)
@@ -96,7 +97,7 @@ def build_model(env, seed: int = 0, tensorboard_log: str | None = None) -> PPO:
 
 
 def train(total_timesteps: int, run_name: str, seed: int = 0, init_checkpoint: str | None = None,
-          eval_freq: int | None = None, log_freq: int | None = None) -> pathlib.Path:
+          eval_freq: int | None = None, log_freq: int | None = None, touch_only_mode: bool = False) -> pathlib.Path:
     with CONFIG_PATH.open(encoding="utf-8") as config_file:
         cfg = yaml.safe_load(config_file)
     if eval_freq is not None: cfg["eval_freq"] = eval_freq
@@ -106,14 +107,21 @@ def train(total_timesteps: int, run_name: str, seed: int = 0, init_checkpoint: s
     logs_dir = run_dir / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "config.yaml").write_text(CONFIG_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+    observation_contract = ("RGB-D head camera + robot proprioception; no cube/destination ground truth"
+        + (" -- touch-only task: reward is distance/close-approach/touch_bonus only, episode ends "
+           "in success on first genuine contact, no attach/lift/carry/place" if touch_only_mode else ""))
     (run_dir / "experiment.json").write_text(json.dumps({"experiment_id": run_name, "parent_checkpoint": init_checkpoint,
-        "observation_contract": "RGB-D head camera + robot proprioception; no cube/destination ground truth", "status": "running"}, indent=2), encoding="utf-8")
-    env = make_env(seed, cfg.get("n_envs", 1))
+        "observation_contract": observation_contract, "touch_only_mode": touch_only_mode, "status": "running"}, indent=2), encoding="utf-8")
+    env = make_env(seed, cfg.get("n_envs", 1), touch_only_mode)
     try:
         model = PPO.load(init_checkpoint, env=env, tensorboard_log=str(logs_dir), device=cfg["device"]) if init_checkpoint else build_model(env, seed, tensorboard_log=str(logs_dir))
         # Keep this runnable in the minimal project environment; SB3's rich/tqdm progress bar
         # is an optional extra and must not be a hidden training dependency.
-        callback = RGBDArtifactCallback(run_dir, total_timesteps, cfg, seed)
+        callback = RGBDArtifactCallback(
+            run_dir, total_timesteps, cfg, seed,
+            task_name="touch_cube" if touch_only_mode else "rgbd_pick_place",
+            touch_only_mode=touch_only_mode,
+        )
         model.learn(total_timesteps=total_timesteps, callback=callback, tb_log_name=run_name, progress_bar=False)
         output_path = run_dir / "rgbd_pick_place_policy"
         model.save(output_path)
@@ -133,5 +141,8 @@ if __name__ == "__main__":
     parser.add_argument("--init-checkpoint", default=None)
     parser.add_argument("--eval-freq", type=int, default=None)
     parser.add_argument("--log-freq", type=int, default=None)
+    parser.add_argument("--touch-only", action="store_true",
+                         help="stripped-down task: reward is distance/close-approach/touch_bonus only, "
+                              "episode ends in success on first genuine cube contact")
     args = parser.parse_args()
-    print(f"saved {train(args.timesteps, args.run_name, args.seed, args.init_checkpoint, args.eval_freq, args.log_freq)}")
+    print(f"saved {train(args.timesteps, args.run_name, args.seed, args.init_checkpoint, args.eval_freq, args.log_freq, args.touch_only)}")
